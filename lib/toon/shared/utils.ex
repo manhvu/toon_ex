@@ -165,11 +165,12 @@ defmodule Toon.Utils do
       true
   """
   @spec all_primitive_values?(list()) :: boolean()
+
   def all_primitive_values?([]), do: true
 
   def all_primitive_values?(list) when is_list(list) do
     Enum.all?(list, fn map ->
-      is_map(map) and Enum.all?(Map.values(map), &primitive?/1)
+      is_map(map) and Enum.all?(map, fn {_k, v} -> primitive?(v) end)
     end)
   end
 
@@ -218,9 +219,10 @@ defmodule Toon.Utils do
 
   def normalize(value) when is_number(value) do
     cond do
-      # Handle negative zero - normalize to integer 0 per TOON spec
-      value == 0 and :math.atan2(value, -1) == :math.pi() -> 0
-      # Handle infinity and NaN
+      # Any zero (positive or negative) → integer 0 per TOON spec.
+      # The previous atan2 trick was inverted: atan2(+0.0,-1)=+π, atan2(-0.0,-1)=-π,
+      # so the old guard was matching +0.0 and letting -0.0 fall through unchanged.
+      value == 0 -> 0
       not is_finite(value) -> nil
       true -> value
     end
@@ -244,9 +246,7 @@ defmodule Toon.Utils do
   end
 
   def normalize(value) when is_map(value) do
-    Map.new(value, fn {k, v} ->
-      {to_string(k), normalize(v)}
-    end)
+    for {k, v} <- value, into: %{}, do: {to_string(k), normalize(v)}
   end
 
   # Fallback for unsupported types

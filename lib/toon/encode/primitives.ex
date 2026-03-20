@@ -54,41 +54,69 @@ defmodule Toon.Encode.Primitives do
 
   @doc false
   @spec format_float(float()) :: String.t()
+
   defp format_float(value) when is_float(value) do
     cond do
-      # Handle NaN - NaN != NaN is the standard IEEE 754 way to detect NaN
+      # IEEE 754 NaN: the only float not equal to itself
       # credo:disable-for-lines:2
       value != value ->
         Constants.null_literal()
 
-      # Handle infinity - infinity multiplied by 2 equals infinity
-      # and is larger than the maximum float
       value > 1.0e308 or value < -1.0e308 ->
         Constants.null_literal()
 
-      # Check if it's a whole number
+      # Whole-number float — encode without decimal point per TOON spec
       trunc(value) == value ->
-        # Format as integer without .0 per TOON spec
         Integer.to_string(trunc(value))
 
       true ->
-        # Format with full precision (17 significant digits for IEEE 754 double precision)
-        # Use ~.16g to get full precision without scientific notation for most cases
-        # But we need to be careful with the format
         str = Float.to_string(value)
+        if scientific?(str), do: to_decimal(value), else: str
+    end
+  end
 
-        # Check if scientific notation was used
-        if String.contains?(str, "e") or String.contains?(str, "E") do
-          # Convert from scientific notation
-          {float_val, ""} = Float.parse(str)
-          # Format with enough precision to preserve the value
-          :io_lib.format("~.16f", [float_val])
-          |> IO.iodata_to_binary()
-          |> String.replace(~r/(\.\d*?)0+$/, "\\1")
-          |> String.replace(~r/\.$/, "")
-        else
-          str
-        end
+  # `:erlang.float_to_binary` uses exponential notation when abs < 0.1 or
+  # abs >= 1.0e16; `Float.to_string` (Ryu) uses it outside a similar range.
+  defp scientific?(str), do: String.contains?(str, "e") or String.contains?(str, "E")
+
+  # Convert a float that Float.to_string/1 represented in scientific notation
+  # to a plain decimal string, trimming trailing zeros.
+  #
+  # Strategy: ask :erlang.float_to_binary/2 for enough decimal places to
+  # preserve all 15–17 significant digits, then strip trailing zeros in one pass.
+  defp to_decimal(value) do
+    abs_val = abs(value)
+
+    # Number of decimal places needed so no significant digit is lost.
+    decimals =
+      cond do
+        abs_val < 1.0 ->
+          # e.g. 1.0e-10 → neg_exp ≈ 10 → decimals = 27
+          neg_exp = abs_val |> :math.log10() |> abs() |> Float.ceil() |> trunc()
+          min(neg_exp + 17, 324)
+
+        true ->
+          # e.g. 1.23e15 → integer part has 16 digits → only 1 decimal needed
+          exp = abs_val |> :math.log10() |> Float.floor() |> trunc()
+          max(17 - exp, 1)
+      end
+
+    raw = :erlang.float_to_binary(value, [{:decimals, decimals}])
+    trim_trailing_zeros(raw)
+  end
+
+  # Splits on "." and strips trailing "0" from the fractional part.
+  # If the fractional part becomes empty the decimal point is also dropped,
+  # which correctly represents whole numbers (should never occur here since
+  # whole-number floats are caught above, but defensive).
+  defp trim_trailing_zeros(str) do
+    case String.split(str, ".", parts: 2) do
+      [int, frac] ->
+        stripped = String.trim_trailing(frac, "0")
+        if stripped == "", do: int, else: int <> "." <> stripped
+
+      [int] ->
+        int
     end
   end
 end

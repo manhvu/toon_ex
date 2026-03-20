@@ -9,8 +9,6 @@ defmodule Toon.Decode.StructuralParser do
   alias Toon.Decode.Parser
   alias Toon.DecodeError
 
-  @invalid_escape_pattern ~r/\\/
-
   # Module-level regex patterns for structural matching
   @tabular_header_pattern ~r/^(?:"[^"]*"|[\w.]+)\[\d+.*\]\{[^}]+\}:$/
   @list_header_pattern ~r/^(?:"[^"]*"|[\w.]+)\[\d+.*\]:$/
@@ -38,68 +36,64 @@ defmodule Toon.Decode.StructuralParser do
   Returns a tuple of {result, metadata} where metadata contains quoted_keys and key_order.
   """
   @spec parse(String.t(), map()) :: {:ok, {term(), parse_metadata()}} | {:error, DecodeError.t()}
+
+  # In parse/2, reverse key_order once before returning:
   def parse(input, opts) when is_binary(input) do
     lines = preprocess_lines(input)
 
-    # Validate indentation in strict mode
-    if opts.strict do
-      validate_indentation(lines, opts)
-    end
+    if opts.strict, do: validate_indentation(lines, opts)
 
-    # Initialize metadata accumulator
-    initial_metadata = %{
-      quoted_keys: MapSet.new(),
-      key_order: []
-    }
+    initial_metadata = %{quoted_keys: MapSet.new(), key_order: []}
 
     {result, metadata} =
       case lines do
-        [] ->
-          {%{}, initial_metadata}
-
-        _ ->
-          parse_structure(lines, 0, opts, initial_metadata)
+        [] -> {%{}, initial_metadata}
+        _ -> parse_structure(lines, 0, opts, initial_metadata)
       end
 
-    {:ok, {result, metadata}}
+    # Reverse once here — O(N) — instead of appending O(N) times above.
+    final_metadata = %{metadata | key_order: Enum.reverse(metadata.key_order)}
+
+    {:ok, {result, final_metadata}}
   rescue
     e in DecodeError ->
       {:error, e}
 
     e ->
       {:error,
-       DecodeError.exception(
-         message: "Parse failed: #{Exception.message(e)}",
-         input: input
-       )}
+       DecodeError.exception(message: "Parse failed: #{Exception.message(e)}", input: input)}
   end
 
   # Preprocess input into line information structures
+
   defp preprocess_lines(input) do
     input
     |> String.split("\n")
     |> Enum.with_index(1)
-    |> Enum.map(fn {line, line_num} ->
-      %{
-        content: String.trim_leading(line),
-        indent: calculate_indent(line),
-        line_number: line_num,
-        original: line,
-        is_blank: String.trim(line) == ""
-      }
-    end)
-    # Filter out blank lines at the end
-    |> Enum.reverse()
-    |> Enum.drop_while(& &1.is_blank)
-    |> Enum.reverse()
+    |> Enum.map(&build_line_info/1)
+    |> drop_trailing_blank()
   end
 
-  # Calculate indentation level (number of leading spaces)
-  defp calculate_indent(line) do
-    line
-    |> String.to_charlist()
-    |> Enum.take_while(&(&1 == ?\s))
-    |> length()
+  defp build_line_info({line, line_num}) do
+    trimmed = String.trim_leading(line)
+    # Indent = bytes trimmed by trim_leading — works for ASCII spaces only,
+    # which is correct (TOON spec: indentation is spaces, not arbitrary whitespace).
+    indent = byte_size(line) - byte_size(trimmed)
+    is_blank = trimmed == "" or String.trim_trailing(trimmed) == ""
+    %{content: trimmed, indent: indent, line_number: line_num, original: line, is_blank: is_blank}
+  end
+
+  # Avoids the double Enum.reverse of the old "reverse → drop_while → reverse"
+  # approach by finding the last non-blank index in a single forward pass.
+  defp drop_trailing_blank(lines) do
+    last_non_blank =
+      lines
+      |> Enum.with_index()
+      |> Enum.reduce(-1, fn {line, idx}, acc ->
+        if line.is_blank, do: acc, else: idx
+      end)
+
+    if last_non_blank < 0, do: [], else: Enum.take(lines, last_non_blank + 1)
   end
 
   # Validate indentation in strict mode
@@ -190,7 +184,6 @@ defmodule Toon.Decode.StructuralParser do
 
   # Parse root-level array
   defp parse_root_array([%{content: header_line} = line_info | rest], opts, metadata) do
-
     case Parser.parse_line(header_line) do
       {:ok, [result], "", _, _, _} ->
         # Handle inline array
@@ -288,7 +281,6 @@ defmodule Toon.Decode.StructuralParser do
   defp parse_entries([], _base_indent, _opts, metadata), do: {[], [], metadata}
 
   defp parse_entries([line | rest] = lines, base_indent, opts, metadata) do
-
     cond do
       # Skip blank lines (only at root level or when not strict)
       line.is_blank ->
@@ -307,15 +299,12 @@ defmodule Toon.Decode.StructuralParser do
       true ->
         case parse_entry_line(line, rest, base_indent, opts, metadata) do
           {:entry, key, value, remaining, updated_metadata} ->
-
-
             {entries, final_remaining, final_metadata} =
               parse_entries(remaining, base_indent, opts, updated_metadata)
 
             {[{key, value} | entries], final_remaining, final_metadata}
 
           {:skip, remaining, updated_metadata} ->
-
             parse_entries(remaining, base_indent, opts, updated_metadata)
         end
     end
@@ -325,7 +314,6 @@ defmodule Toon.Decode.StructuralParser do
   defp parse_entry_line(%{content: content} = line_info, rest, base_indent, opts, metadata) do
     # Track if key was quoted by checking if line starts with quote
     was_quoted = key_was_quoted?(content)
-
 
     case Parser.parse_line(content) do
       {:ok, [result], "", _, _, _} ->
@@ -460,24 +448,30 @@ defmodule Toon.Decode.StructuralParser do
   defp tabular_array_header?(content), do: String.match?(content, @tabular_header_pattern)
   defp list_array_header?(content), do: String.match?(content, @list_header_pattern)
 
-  defp nested_object_header?(content) do
-    String.ends_with?(content, ":") and not String.contains?(content, " ")
+  defp line_kind(content) do
+    cond do
+      String.match?(content, @tabular_header_pattern) ->
+        :tabular_array
+
+      String.match?(content, @list_header_pattern) ->
+        :list_array
+
+      String.ends_with?(content, ":") and
+          not String.contains?(content, " ") ->
+        :nested_object
+
+      true ->
+        :unknown
+    end
   end
 
   # Handle special line formats (array headers, etc.)
-  defp handle_special_line(%{content: content} = line_info, rest, base_indent, opts, metadata) do
-    cond do
-      tabular_array_header?(content) ->
-        parse_tabular_array_entry(line_info, rest, base_indent, opts, metadata)
-
-      list_array_header?(content) ->
-        parse_list_array_entry(line_info, rest, base_indent, opts, metadata)
-
-      nested_object_header?(content) ->
-        parse_nested_object_entry(content, rest, base_indent, opts, metadata)
-
-      true ->
-        {:skip, rest, metadata}
+  defp handle_special_line(%{content: content} = line_info, rest, base_indent, opts, meta) do
+    case line_kind(content) do
+      :tabular_array -> parse_tabular_array_entry(line_info, rest, base_indent, opts, meta)
+      :list_array -> parse_list_array_entry(line_info, rest, base_indent, opts, meta)
+      :nested_object -> parse_nested_object_entry(content, rest, base_indent, opts, meta)
+      :unknown -> {:skip, rest, meta}
     end
   end
 
@@ -532,7 +526,6 @@ defmodule Toon.Decode.StructuralParser do
 
   # Parse tabular array
   defp parse_tabular_array(%{content: header}, rest, base_indent, opts, metadata) do
-    # Extract key and fields from header (with optional # length marker and quoted key)
     case Regex.run(~r/^((?:"[^"]*"|[\w.]+))(\[\d+.*\])\{([^}]+)\}:$/, header) do
       [_, raw_key, array_marker, fields_str] ->
         key = unquote_key(raw_key)
@@ -542,10 +535,24 @@ defmodule Toon.Decode.StructuralParser do
         delimiter = extract_delimiter(array_marker)
         fields = parse_fields(fields_str, delimiter)
 
-        # Get data rows
-        data_rows = take_nested_lines(rest, base_indent)
-        array_data = parse_tabular_data_rows(data_rows, fields, delimiter, opts)
+        # Extract declared length from array_marker
+        declared_length =
+          case Regex.run(~r/\[(\d+)/, array_marker) do
+            [_, len_str] -> String.to_integer(len_str)
+            nil -> nil
+          end
 
+        data_rows = take_nested_lines(rest, base_indent)
+
+        # Validate row count when a length was declared (always the case in TOON)
+        if declared_length != nil and length(data_rows) != declared_length do
+          raise DecodeError,
+            message:
+              "Tabular array row count mismatch: declared #{declared_length}, got #{length(data_rows)}",
+            input: header
+        end
+
+        array_data = parse_tabular_data_rows(data_rows, fields, delimiter, opts)
         {{key, array_data}, updated_meta}
 
       nil ->
@@ -728,6 +735,9 @@ defmodule Toon.Decode.StructuralParser do
   end
 
   # Normal list item parsing (extracted to helper)
+
+  # ── parse_list_item_normal/5  (call site — add trimmed to the call) ────────────
+
   defp parse_list_item_normal(trimmed, rest, line, expected_indent, opts) do
     delimiter = Map.get(opts, :delimiter, ",")
 
@@ -737,11 +747,15 @@ defmodule Toon.Decode.StructuralParser do
 
       {:ok, [{key, partial_value}], remaining_input, _, _, _}
       when is_binary(remaining_input) and remaining_input != "" ->
+        # Pass `trimmed` so handle_partial_parse can delegate back to
+        # handle_complete_parse with the full original content.
         handle_partial_parse(
           key,
           partial_value,
           remaining_input,
+          # <-- trimmed added here
           delimiter,
+          trimmed,
           rest,
           line,
           expected_indent,
@@ -750,6 +764,49 @@ defmodule Toon.Decode.StructuralParser do
 
       {:error, _, _, _, _, _} ->
         handle_parse_error(trimmed, rest, expected_indent, opts)
+    end
+  end
+
+  # ── handle_partial_parse/9  (was /8 — trimmed parameter added) ────────────────
+
+  defp handle_partial_parse(
+         key,
+         partial_value,
+         remaining_input,
+         # <-- new parameter
+         delimiter,
+         trimmed,
+         rest,
+         line,
+         expected_indent,
+         opts
+       ) do
+    if delimiter != "," and String.starts_with?(remaining_input, ",") do
+      # Original case: non-comma row delimiter, but the value itself contains a
+      # comma (e.g. tab-delimited array with a comma-containing string value).
+      full_value = parse_value(to_string(partial_value) <> remaining_input)
+
+      continuation_lines = take_item_lines(rest, expected_indent)
+
+      item_indent =
+        if length(continuation_lines) > 0,
+          do: continuation_lines |> Enum.map(& &1.indent) |> Enum.min(),
+          else: line.indent
+
+      adjusted_content = "#{key}: #{full_value}"
+      item_lines = [%{line | content: adjusted_content, indent: item_indent} | continuation_lines]
+      empty_metadata = %{quoted_keys: MapSet.new(), key_order: []}
+      {object, _} = parse_object_lines(item_lines, item_indent, opts, empty_metadata)
+      remaining = Enum.drop(rest, length(continuation_lines))
+      {object, remaining}
+    else
+      # General case: the parser consumed only part of the value
+      # (e.g. "500000" from "500000 USD", stopping at the space).
+      # Delegate to handle_complete_parse, which prepends a line with content
+      # = `trimmed` and calls parse_object_lines.  parse_entry_line's
+      # `rest_content != ""` branch then re-extracts the full value string by
+      # splitting on ": " — correctly returning "500000 USD" as a string.
+      handle_complete_parse({key, partial_value}, trimmed, rest, line, expected_indent, opts)
     end
   end
 
@@ -1097,13 +1154,8 @@ defmodule Toon.Decode.StructuralParser do
   end
 
   # Parse fields from tabular header
-  defp parse_fields(fields_str, delimiter) do
-    # Split while respecting quoted strings (same logic as parse_delimited_values)
-    delimiter_escaped = Regex.escape(delimiter)
-    regex = ~r/("(?:[^"\\]|\\.)*"|[^#{delimiter_escaped}]+)/
-
-    Regex.scan(regex, fields_str)
-    |> Enum.map(&hd/1)
+  defp parse_fields(fields_str, _row_delimiter) do
+    split_respecting_quotes(fields_str, ",")
     |> Enum.map(&String.trim/1)
     |> Enum.map(&unquote_key/1)
   end
@@ -1119,20 +1171,18 @@ defmodule Toon.Decode.StructuralParser do
 
   # Parse delimited values from row
   defp parse_delimited_values(row_str, delimiter) do
-    # Auto-detect delimiter if the declared delimiter doesn't seem to be present
-    actual_delimiter =
-      if delimiter == "," and String.contains?(row_str, "\t") and
-           not String.contains?(row_str, ",") do
-        "\t"
-      else
-        delimiter
-      end
+    actual_delimiter = detect_delimiter(row_str, delimiter)
 
-    # Split by delimiter, respecting quoted strings
-    # This handles spaces around delimiters and empty tokens
     split_respecting_quotes(row_str, actual_delimiter)
-    |> Enum.map(&String.trim/1)
-    |> Enum.map(&parse_value/1)
+    |> Enum.map(&parse_value(String.trim(&1)))
+  end
+
+  # Extract the auto-detect logic so both places that call it stay readable:
+  defp detect_delimiter(row_str, delimiter) do
+    if delimiter == "," and String.contains?(row_str, "\t") and
+         not String.contains?(row_str, ","),
+       do: "\t",
+       else: delimiter
   end
 
   # Split a string by delimiter, but don't split inside quoted strings
@@ -1157,6 +1207,9 @@ defmodule Toon.Decode.StructuralParser do
     do_split_respecting_quotes(rest, delimiter, ["\"" | current], not in_quote, acc)
   end
 
+  # NOTE: delimiter must be a single ASCII byte (`,`, `\t`, or `|`).
+  # Do not extend to multi-byte delimiters without replacing the byte-level
+  # pattern match below.
   defp do_split_respecting_quotes(<<char, rest::binary>>, delimiter, current, false, acc)
        when <<char>> == delimiter do
     # Delimiter outside quotes - split here, convert current iolist to string
@@ -1230,14 +1283,12 @@ defmodule Toon.Decode.StructuralParser do
 
   # Update metadata with a key, checking if it was quoted
   defp add_key_to_metadata(key, was_quoted, metadata) do
-    updated_metadata =
-      if was_quoted do
-        %{metadata | quoted_keys: MapSet.put(metadata.quoted_keys, key)}
-      else
-        metadata
-      end
+    updated =
+      if was_quoted,
+        do: %{metadata | quoted_keys: MapSet.put(metadata.quoted_keys, key)},
+        else: metadata
 
-    %{updated_metadata | key_order: updated_metadata.key_order ++ [key]}
+    %{updated | key_order: [key | updated.key_order]}
   end
 
   # Remove quotes and unescape string
@@ -1276,28 +1327,47 @@ defmodule Toon.Decode.StructuralParser do
     |> rem(2) == 1
   end
 
-  # Unescape string
-  defp unescape_string(str) do
-    # Per TOON spec: only \\, \", \n, \r, \t are valid escape sequences
-    # We need to do replacements in the right order to handle \\ correctly
-    # First replace \\ to a placeholder, then other escapes, then placeholder back to \
-    str
-    |> String.replace("\\\\", <<0>>)
-    |> String.replace("\\\"", "\"")
-    |> String.replace("\\n", "\n")
-    |> String.replace("\\r", "\r")
-    |> String.replace("\\t", "\t")
-    |> validate_no_invalid_escapes(str)
-    |> String.replace(<<0>>, "\\")
+  defp unescape_string(str), do: do_unescape(str, [])
+
+  defp do_unescape(<<>>, acc),
+    do: acc |> Enum.reverse() |> IO.iodata_to_binary()
+
+  defp do_unescape(<<"\\", char, rest::binary>>, acc) do
+    replacement =
+      case char do
+        ?\\ ->
+          "\\"
+
+        ?" ->
+          "\""
+
+        ?n ->
+          "\n"
+
+        ?r ->
+          "\r"
+
+        ?t ->
+          "\t"
+
+        _ ->
+          raise DecodeError,
+            message: "Invalid escape sequence: \\#{<<char>>}",
+            input: <<?\\, char>>
+      end
+
+    do_unescape(rest, [replacement | acc])
   end
 
-  defp validate_no_invalid_escapes(processed, original) do
-    if String.match?(processed, @invalid_escape_pattern) do
-      raise DecodeError, message: "Invalid escape sequence", input: original
-    else
-      processed
-    end
-  end
+  # Lone trailing backslash (malformed input)
+  defp do_unescape(<<"\\">>, _acc),
+    do: raise(DecodeError, message: "Unterminated escape sequence", input: "\\")
+
+  # NOTE: Matches one BYTE at a time.  Valid for all ASCII content and for the
+  # non-ASCII bytes of multibyte UTF-8 sequences (their high bytes are all ≥ 0x80
+  # and cannot equal any ASCII special character, so this is safe).
+  defp do_unescape(<<byte, rest::binary>>, acc),
+    do: do_unescape(rest, [<<byte>> | acc])
 
   # Peek at next line's indent (skip blank lines)
   defp peek_next_indent([]), do: 0
@@ -1350,10 +1420,29 @@ defmodule Toon.Decode.StructuralParser do
     end
   end
 
-  # Skip lines that are more indented than base
+  # Fixed – mirrors the logic of take_nested_lines_helper
   defp skip_nested_lines(lines, base_indent) do
-    remaining = Enum.drop_while(lines, fn %{indent: indent} -> indent > base_indent end)
+    remaining = do_skip_nested(lines, base_indent)
     {remaining, length(lines) - length(remaining)}
+  end
+
+  defp do_skip_nested([], _base_indent), do: []
+
+  defp do_skip_nested([line | rest] = all, base_indent) do
+    cond do
+      !line.is_blank and line.indent > base_indent ->
+        do_skip_nested(rest, base_indent)
+
+      !line.is_blank ->
+        all
+
+      line.is_blank ->
+        if peek_next_indent(rest) > base_indent do
+          do_skip_nested(rest, base_indent)
+        else
+          all
+        end
+    end
   end
 
   # Take lines for a list item (until next item marker at same level)

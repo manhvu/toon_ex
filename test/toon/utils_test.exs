@@ -86,4 +86,10 @@ defmodule Toon.UtilsTest do
       assert Utils.all_maps?([]) == true
     end
   end
+
+  test "negative zero normalizes to integer 0" do
+    result = Toon.Utils.normalize(-0.0)
+    assert result === 0
+    refute is_float(result)
+  end
 end

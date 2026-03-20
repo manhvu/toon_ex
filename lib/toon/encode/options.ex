@@ -110,14 +110,10 @@ defmodule Toon.Encode.Options do
       %{indent: 4, delimiter: ",", length_marker: nil, indent_string: "    "}
   """
   @spec validate!(keyword()) :: validated()
-  def validate!(opts) when is_list(opts) do
+  def validate!(opts) do
     case validate(opts) do
-      {:ok, validated} ->
-        # Add computed indent_string based on indent value
-        Map.put(validated, :indent_string, String.duplicate(" ", validated.indent))
-
-      {:error, error} ->
-        raise ArgumentError, Exception.message(error)
+      {:ok, validated} -> validated
+      {:error, error} -> raise ArgumentError, Exception.message(error)
     end
   end
 

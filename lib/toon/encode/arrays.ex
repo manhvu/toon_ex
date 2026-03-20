@@ -113,23 +113,15 @@ defmodule Toon.Encode.Arrays do
     length_marker = format_length_marker(length(list), opts.length_marker)
     encoded_key = Strings.encode_key(key)
 
-    # Get keys from first object and use provided key order or sort alphabetically
     keys =
       case list do
         [first | _] ->
           map_keys = Map.keys(first)
-
           key_order = Map.get(opts, :key_order)
 
-          # Use key_order if provided and matches all keys
           if is_list(key_order) and not Enum.empty?(key_order) do
             ordered = Enum.filter(key_order, &(&1 in map_keys))
-
-            if length(ordered) == length(map_keys) do
-              ordered
-            else
-              Enum.sort(map_keys)
-            end
+            if length(ordered) == length(map_keys), do: ordered, else: Enum.sort(map_keys)
           else
             Enum.sort(map_keys)
           end
@@ -138,8 +130,8 @@ defmodule Toon.Encode.Arrays do
           []
       end
 
-    # Format header: key[N]{field1,field2,...}: or key[N\t]{...}: per TOON spec
-    fields = Enum.map(keys, &Strings.encode_key/1) |> Enum.intersperse(opts.delimiter)
+    # Field names in {…} are ALWAYS comma-separated regardless of row delimiter.
+    fields = keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(",")
     delimiter_marker = format_delimiter_marker(opts.delimiter)
 
     header = [
@@ -154,17 +146,13 @@ defmodule Toon.Encode.Arrays do
       Constants.colon()
     ]
 
-    # Format data rows
-    # Data rows will be indented by the Writer in Objects module
     rows =
       Enum.map(list, fn obj ->
-        values =
-          keys
-          |> Enum.map(fn k -> Map.get(obj, k) end)
-          |> Enum.map(&Primitives.encode(&1, opts.delimiter))
-          |> Enum.intersperse(opts.delimiter)
-
-        values
+        keys
+        |> Enum.map(&Map.get(obj, &1))
+        |> Enum.map(&Primitives.encode(&1, opts.delimiter))
+        # row data still uses opts.delimiter
+        |> Enum.intersperse(opts.delimiter)
       end)
 
     [header | rows]
@@ -475,9 +463,7 @@ defmodule Toon.Encode.Arrays do
   end
 
   defp encode_nested_map(v, depth, opts) do
-    Toon.Encode.do_encode(v, depth + 1, opts)
-    |> IO.iodata_to_binary()
-    |> String.split("\n")
+    Toon.Encode.Objects.encode_to_lines(v, depth + 1, opts)
     |> Enum.map(&[opts.indent_string, &1])
   end
 end

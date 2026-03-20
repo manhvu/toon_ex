@@ -21,31 +21,112 @@ defmodule Toon.Encode.Objects do
   """
   @spec encode(map(), non_neg_integer(), map()) :: [iodata()]
   def encode(map, depth, opts) when is_map(map) do
-    writer = Writer.new(opts.indent)
+    map
+    |> do_encode_map(depth, opts)
+    |> Writer.to_iodata()
+  end
 
-    # Get the keys in the correct order
+  def encode_to_lines(map, depth, opts) do
+    map
+    |> do_encode_map(depth, opts)
+    |> Writer.to_lines()
+  end
+
+
+  # All the real work lives here; both encode/3 and encode_to_lines/3 delegate.
+  defp do_encode_map(map, depth, opts) do
+    writer = Writer.new(opts.indent)
     keys = get_ordered_keys(map, Map.get(opts, :key_order), [])
 
-    # At root level (depth 0), collect dotted keys as forbidden fold paths
     opts =
       if depth == 0 and not Map.has_key?(opts, :forbidden_fold_paths) do
-        forbidden = collect_forbidden_fold_paths(keys)
-        Map.put(opts, :forbidden_fold_paths, forbidden)
+        Map.put(opts, :forbidden_fold_paths, collect_forbidden_fold_paths(keys))
       else
         opts
       end
 
-    # Get current path prefix for collision detection
     path_prefix = Map.get(opts, :current_path_prefix, "")
 
-    writer =
-      keys
-      |> Enum.reduce(writer, fn key, acc ->
-        value = Map.get(map, key)
-        encode_entry(acc, key, value, depth, opts, path_prefix)
-      end)
+    Enum.reduce(keys, writer, fn key, acc ->
+      encode_entry(acc, key, Map.get(map, key), depth, opts, path_prefix)
+    end)
+  end
 
-    Writer.to_iodata(writer)
+  # Nested map entry — uses encode_to_lines to avoid the binary roundtrip.
+  defp encode_map_entry(writer, key, value, depth, opts) do
+    encoded_key = Strings.encode_key(key)
+    header = [encoded_key, Constants.colon()]
+    writer = Writer.push(writer, header, depth)
+
+    current_prefix = Map.get(opts, :current_path_prefix, "")
+    new_prefix = build_path_prefix(current_prefix, key)
+    nested_opts = Map.put(opts, :current_path_prefix, new_prefix)
+    nested_lines = encode_to_lines(value, depth + 1, nested_opts)
+
+    append_lines(writer, nested_lines)
+  end
+
+  # Clause 1 — primitive final value
+  defp encode_folded_value(writer, folded_key, final_value, depth, opts)
+       when is_nil(final_value) or is_boolean(final_value) or
+              is_number(final_value) or is_binary(final_value) do
+    line = [
+      folded_key,
+      Constants.colon(),
+      Constants.space(),
+      Primitives.encode(final_value, opts.delimiter)
+    ]
+
+    Writer.push(writer, line, depth)
+  end
+
+  # Clause 2 — list (array) final value
+  defp encode_folded_value(writer, folded_key, final_value, depth, opts)
+       when is_list(final_value) do
+    array_lines = Arrays.encode(folded_key, final_value, depth, opts)
+    # 3-arg version — unchanged
+    append_lines(writer, array_lines, depth)
+  end
+
+  # Clause 3 — empty map final value
+  defp encode_folded_value(writer, folded_key, final_value, depth, _opts)
+       when is_map(final_value) and map_size(final_value) == 0 do
+    Writer.push(writer, [folded_key, Constants.colon()], depth)
+  end
+
+  # Clause 4 — non-empty map final value (UPDATED: uses encode_to_lines + append_lines/2)
+  defp encode_folded_value(writer, folded_key, final_value, depth, opts)
+       when is_map(final_value) do
+    nested_opts = Map.put(opts, :flatten_depth, 0)
+    header = [folded_key, Constants.colon()]
+    writer = Writer.push(writer, header, depth)
+    nested_lines = encode_to_lines(final_value, depth + 1, nested_opts)
+    # 2-arg version from performance fix
+    append_lines(writer, nested_lines)
+  end
+
+  # Clause 5 — fallback for any type not covered above (encodes as null)
+  defp encode_folded_value(writer, folded_key, _final_value, depth, _opts) do
+    Writer.push(
+      writer,
+      [folded_key, Constants.colon(), Constants.space(), Constants.null_literal()],
+      depth
+    )
+  end
+
+  # NEW helper — pushes pre-built line iodata directly into the writer.
+  # Zero binary allocation vs the old append_iodata that did:
+  #   IO.iodata_to_binary → String.split("\n") → Enum.reduce Writer.push
+  #
+  # Note: blank lines (empty iodata) are skipped to preserve the old
+  # behaviour of append_iodata which filtered out empty strings.
+  defp append_lines(writer, lines) do
+    Enum.reduce(lines, writer, fn
+      # skip empty lines produced by nested empty objects
+      "", acc -> acc
+      [], acc -> acc
+      line, acc -> %{acc | lines: [line | acc.lines]}
+    end)
   end
 
   # Collect all dotted keys that should prevent folding
@@ -132,19 +213,6 @@ defmodule Toon.Encode.Objects do
     Writer.push(writer, line, depth)
   end
 
-  defp encode_map_entry(writer, key, value, depth, opts) do
-    encoded_key = Strings.encode_key(key)
-    header = [encoded_key, Constants.colon()]
-    writer = Writer.push(writer, header, depth)
-
-    current_prefix = Map.get(opts, :current_path_prefix, "")
-    new_prefix = build_path_prefix(current_prefix, key)
-    nested_opts = Map.put(opts, :current_path_prefix, new_prefix)
-    nested_lines = encode(value, depth + 1, nested_opts)
-
-    append_iodata(writer, nested_lines, depth + 1)
-  end
-
   defp encode_null_entry(writer, key, depth, _opts) do
     encoded_key = Strings.encode_key(key)
     line = [encoded_key, Constants.colon(), Constants.space(), Constants.null_literal()]
@@ -210,50 +278,6 @@ defmodule Toon.Encode.Objects do
     encode_folded_value(writer, folded_key, final_value, depth, opts)
   end
 
-  # Primitive final value
-  defp encode_folded_value(writer, folded_key, final_value, depth, opts)
-       when is_nil(final_value) or is_boolean(final_value) or is_number(final_value) or
-              is_binary(final_value) do
-    line = [
-      folded_key,
-      Constants.colon(),
-      Constants.space(),
-      Primitives.encode(final_value, opts.delimiter)
-    ]
-
-    Writer.push(writer, line, depth)
-  end
-
-  # Array final value
-  defp encode_folded_value(writer, folded_key, final_value, depth, opts)
-       when is_list(final_value) do
-    array_lines = Arrays.encode(folded_key, final_value, depth, opts)
-    append_lines(writer, array_lines, depth)
-  end
-
-  # Empty map final value
-  defp encode_folded_value(writer, folded_key, final_value, depth, _opts)
-       when is_map(final_value) and map_size(final_value) == 0 do
-    line = [folded_key, Constants.colon()]
-    Writer.push(writer, line, depth)
-  end
-
-  # Non-empty map final value
-  defp encode_folded_value(writer, folded_key, final_value, depth, opts)
-       when is_map(final_value) do
-    nested_opts = Map.put(opts, :flatten_depth, 0)
-    header = [folded_key, Constants.colon()]
-    writer = Writer.push(writer, header, depth)
-    nested_lines = encode(final_value, depth + 1, nested_opts)
-    append_iodata(writer, nested_lines, depth + 1)
-  end
-
-  # Unsupported type
-  defp encode_folded_value(writer, folded_key, _final_value, depth, _opts) do
-    line = [folded_key, Constants.colon(), Constants.space(), Constants.null_literal()]
-    Writer.push(writer, line, depth)
-  end
-
   # Recursively collect the path for folding
   # Pattern 1: Not a map - stop folding
   defp collect_fold_path(path, value, _opts, _current_depth) when not is_map(value) do
@@ -290,24 +314,6 @@ defmodule Toon.Encode.Objects do
 
     Enum.reduce(data_rows, writer, fn row, acc ->
       Writer.push(acc, row, depth + 1)
-    end)
-  end
-
-  defp append_iodata(writer, iodata, _base_depth) do
-    # Convert iodata to string, split by lines, and add to writer
-    iodata
-    |> IO.iodata_to_binary()
-    |> String.split("\n")
-    |> Enum.reduce(writer, fn line, acc ->
-      # Lines from nested encode already have relative indentation,
-      # but we need to add them without additional depth since encode()
-      # already handles depth
-      if line == "" do
-        acc
-      else
-        # Extract existing indentation and preserve it
-        Writer.push(acc, line, 0)
-      end
     end)
   end
 end

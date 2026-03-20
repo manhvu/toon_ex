@@ -154,23 +154,24 @@ defmodule Toon.Encode do
 
   @spec do_encode(Toon.Types.encodable(), non_neg_integer(), map()) :: iodata()
   @doc false
+
   def do_encode(data, depth, opts) do
     cond do
       Utils.primitive?(data) ->
         Primitives.encode(data, opts.delimiter)
 
-      # Check if this is an ordered list (list of {key, value} tuples)
       is_list(data) and tuple_list?(data) ->
-        # Convert to map and encode with key order preserved
         map = Map.new(data)
         key_order = Enum.map(data, fn {k, _v} -> k end)
+
         Objects.encode(map, depth, Map.put(opts, :key_order, key_order))
+        |> IO.iodata_to_binary()
 
       Utils.map?(data) ->
         Objects.encode(data, depth, opts)
+        |> IO.iodata_to_binary()
 
       Utils.list?(data) ->
-        # Root-level arrays per TOON spec Section 5
         encode_root_array(data, depth, opts)
 
       true ->
@@ -216,24 +217,17 @@ defmodule Toon.Encode do
   end
 
   # Encode root tabular array
+  #
   defp encode_root_tabular_array(data, length_marker, delimiter_marker, opts) do
-    # Get keys from first object and use provided key order or sort alphabetically
     keys =
       case data do
         [first | _] ->
           map_keys = Map.keys(first)
-
           key_order = Map.get(opts, :key_order)
 
-          # Use key_order if provided and matches all keys
           if is_list(key_order) and not Enum.empty?(key_order) do
             ordered = Enum.filter(key_order, &(&1 in map_keys))
-
-            if length(ordered) == length(map_keys) do
-              ordered
-            else
-              Enum.sort(map_keys)
-            end
+            if length(ordered) == length(map_keys), do: ordered, else: Enum.sort(map_keys)
           else
             Enum.sort(map_keys)
           end
@@ -242,8 +236,8 @@ defmodule Toon.Encode do
           []
       end
 
-    # Format header
-    fields = Enum.map(keys, &Strings.encode_key/1) |> Enum.intersperse(opts.delimiter)
+    # Field names in {…} are ALWAYS comma-separated regardless of row delimiter.
+    fields = keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(",")
 
     header = [
       "[",
@@ -256,13 +250,13 @@ defmodule Toon.Encode do
       Constants.colon()
     ]
 
-    # Format data rows
     rows =
       Enum.map(data, fn obj ->
         values =
           keys
-          |> Enum.map(fn k -> Map.get(obj, k) end)
+          |> Enum.map(&Map.get(obj, &1))
           |> Enum.map(&Primitives.encode(&1, opts.delimiter))
+          # row data still uses opts.delimiter
           |> Enum.intersperse(opts.delimiter)
 
         [opts.indent_string, values]
@@ -413,28 +407,43 @@ defmodule Toon.Encode do
           encoded_key = Strings.encode_key(k)
           needs_marker = index == 0
 
-            cond do
-              is_map(v) ->
-                line = [
-                  encoded_key,
-                  Constants.colon(),
-                  Constants.space(),
-                  Objects.encode(v, depth, opts)
-                ]
-                if needs_marker do
-                  [[Constants.list_item_marker(), Constants.space() | line]]
-                else
-                  [[opts.indent_string | line]]
-                end
+          cond do
+            is_map(v) ->
+              # Header line: "- key:" or "  key:"
+              header =
+                if needs_marker,
+                  do: [
+                    Constants.list_item_marker(),
+                    Constants.space(),
+                    encoded_key,
+                    Constants.colon()
+                  ],
+                  else: [opts.indent_string, encoded_key, Constants.colon()]
 
-              is_list(v) ->
-                line = Arrays.encode_list(k, v, depth  + 1, opts)
-                if needs_marker do
-                  [[Constants.list_item_marker(), Constants.space() | line]]
-                else
-                  [[opts.indent_string | line]]
-                end
-            end
+              # Nested lines from Objects, each indented two extra levels (one for
+              # the list item, one for the nested object depth).
+              nested_lines =
+                Objects.encode_to_lines(v, 0, opts)
+                |> Enum.map(&[opts.indent_string, opts.indent_string, &1])
+
+              [header | nested_lines]
+
+            is_list(v) ->
+              [header | data_lines] = Arrays.encode_list(k, v, depth + 1, opts)
+
+              marked_header =
+                if needs_marker,
+                  do: [Constants.list_item_marker(), Constants.space(), header],
+                  else: [opts.indent_string, header]
+
+              indented_data = Enum.map(data_lines, &[opts.indent_string, opts.indent_string, &1])
+              [marked_header | indented_data]
+
+            true ->
+              raise Toon.EncodeError,
+                message: "Cannot encode value in list entry: #{inspect(v)}",
+                value: v
+          end
       end
 
     result

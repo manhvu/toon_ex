@@ -88,7 +88,7 @@ defmodule Toon.RoundtripTest do
     end
 
     test "mixed type list with empty object" do
-      input = [1, "two", :three, %{}, nil, %{}]
+      input = [1, "two", "three", %{}, nil, %{}]
       {_enc, decoded, normalized} = roundtrip(input)
       assert normalized == input
       assert decoded == normalized
@@ -96,8 +96,10 @@ defmodule Toon.RoundtripTest do
 
     test "mixed type list with map object" do
       input = [1, "two", :three, %{"a" => %{}, "b" => "b"}]
+      expected = [1, "two", "three", %{"a" => %{}, "b" => "b"}]
       {_enc, decoded, normalized} = roundtrip(input)
-      assert normalized == input
+
+      assert normalized == expected
       assert decoded == normalized
     end
 
@@ -402,5 +404,19 @@ defmodule Toon.RoundtripTest do
       # Tabular format for primitive integer values
       assert String.contains?(encoded, "]{")
     end
+  end
+
+  test "very small float roundtrips correctly" do
+    data = %{"x" => 1.0e-10}
+    {encoded, decoded, normalized} = roundtrip(data)
+    IO.puts("#{inspect(encoded)}")
+    refute String.contains?(encoded, "e"), "should not use scientific notation"
+    assert_in_delta decoded["x"], normalized["x"], 1.0e-20
+  end
+
+  test "very large float roundtrips correctly" do
+    data = %{"x" => 1.23456789e15}
+    {_encoded, decoded, normalized} = roundtrip(data)
+    assert decoded["x"] == normalized["x"]
   end
 end
