@@ -127,6 +127,7 @@ defmodule Toon.Decode do
     strict = Map.get(opts, :strict, true)
     ordered_keys = get_ordered_keys(result, metadata.key_order)
 
+
     Enum.reduce(ordered_keys, %{}, fn key, acc ->
       value = Map.get(result, key) |> maybe_expand_paths_nested(opts)
       process_key(acc, key, value, quoted_keys, strict)
@@ -141,6 +142,7 @@ defmodule Toon.Decode do
 
   # Process a single key - either expand dotted path or insert directly
   defp process_key(acc, key, value, quoted_keys, strict) do
+
     if should_expand?(key, quoted_keys) do
       nested = build_nested(String.split(key, "."), value)
       deep_merge_with_conflict(acc, nested, strict)

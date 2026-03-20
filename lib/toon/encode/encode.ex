@@ -7,7 +7,7 @@ defmodule Toon.Encode do
   """
 
   alias Toon.{Constants, EncodeError, Utils}
-  alias Toon.Encode.{Objects, Options, Primitives, Strings}
+  alias Toon.Encode.{Objects, Options, Arrays, Primitives, Strings}
 
   @doc """
   Encodes Elixir data to TOON format string.
@@ -278,7 +278,8 @@ defmodule Toon.Encode do
 
     items =
       Enum.flat_map(data, fn item ->
-        encode_root_list_item(item, depth, opts)
+        result = encode_root_list_item(item, depth, opts)
+        result
       end)
 
     # Don't add extra indentation - items already have their indentation
@@ -356,7 +357,6 @@ defmodule Toon.Encode do
         nested_items =
           Enum.flat_map(item, fn nested_item ->
             nested = encode_root_list_item(nested_item, 0, opts)
-            IO.puts("nested: #{inspect(nested)}")
 
             Enum.map(nested, fn line ->
               [opts.indent_string | line]
@@ -373,27 +373,71 @@ defmodule Toon.Encode do
   end
 
   # Encode a single entry in root list item
-  defp encode_root_list_entry(k, v, index, _depth, opts) do
-    if Utils.primitive?(v) do
-      encoded_key = Strings.encode_key(k)
-      needs_marker = index == 0
+  defp encode_root_list_entry(k, v, index, depth, opts) do
+    result =
+      cond do
+        Utils.primitive?(v) ->
+          encoded_key = Strings.encode_key(k)
+          needs_marker = index == 0
 
-      line = [
-        encoded_key,
-        Constants.colon(),
-        Constants.space(),
-        Primitives.encode(v, opts.delimiter)
-      ]
+          line = [
+            encoded_key,
+            Constants.colon(),
+            Constants.space(),
+            Primitives.encode(v, opts.delimiter)
+          ]
 
-      if needs_marker do
-        [[Constants.list_item_marker(), Constants.space() | line]]
-      else
-        [[opts.indent_string | line]]
+          if needs_marker do
+            [[Constants.list_item_marker(), Constants.space() | line]]
+          else
+            [[opts.indent_string | line]]
+          end
+
+        v == %{} ->
+          encoded_key = Strings.encode_key(k)
+          needs_marker = index == 0
+
+          line = [
+            encoded_key,
+            Constants.colon(),
+            Constants.space()
+          ]
+
+          if needs_marker do
+            [[Constants.list_item_marker(), Constants.space() | line]]
+          else
+            [[opts.indent_string | line]]
+          end
+
+        true ->
+          encoded_key = Strings.encode_key(k)
+          needs_marker = index == 0
+
+            cond do
+              is_map(v) ->
+                line = [
+                  encoded_key,
+                  Constants.colon(),
+                  Constants.space(),
+                  Objects.encode(v, depth, opts)
+                ]
+                if needs_marker do
+                  [[Constants.list_item_marker(), Constants.space() | line]]
+                else
+                  [[opts.indent_string | line]]
+                end
+
+              is_list(v) ->
+                line = Arrays.encode_list(k, v, depth  + 1, opts)
+                if needs_marker do
+                  [[Constants.list_item_marker(), Constants.space() | line]]
+                else
+                  [[opts.indent_string | line]]
+                end
+            end
       end
-    else
-      # Complex structures are handled by the array encoder
-      []
-    end
+
+    result
   end
 
   # Format length marker

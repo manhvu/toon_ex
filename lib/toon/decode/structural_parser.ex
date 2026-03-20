@@ -190,6 +190,7 @@ defmodule Toon.Decode.StructuralParser do
 
   # Parse root-level array
   defp parse_root_array([%{content: header_line} = line_info | rest], opts, metadata) do
+
     case Parser.parse_line(header_line) do
       {:ok, [result], "", _, _, _} ->
         # Handle inline array
@@ -287,6 +288,7 @@ defmodule Toon.Decode.StructuralParser do
   defp parse_entries([], _base_indent, _opts, metadata), do: {[], [], metadata}
 
   defp parse_entries([line | rest] = lines, base_indent, opts, metadata) do
+
     cond do
       # Skip blank lines (only at root level or when not strict)
       line.is_blank ->
@@ -305,12 +307,15 @@ defmodule Toon.Decode.StructuralParser do
       true ->
         case parse_entry_line(line, rest, base_indent, opts, metadata) do
           {:entry, key, value, remaining, updated_metadata} ->
+
+
             {entries, final_remaining, final_metadata} =
               parse_entries(remaining, base_indent, opts, updated_metadata)
 
             {[{key, value} | entries], final_remaining, final_metadata}
 
           {:skip, remaining, updated_metadata} ->
+
             parse_entries(remaining, base_indent, opts, updated_metadata)
         end
     end
@@ -320,6 +325,7 @@ defmodule Toon.Decode.StructuralParser do
   defp parse_entry_line(%{content: content} = line_info, rest, base_indent, opts, metadata) do
     # Track if key was quoted by checking if line starts with quote
     was_quoted = key_was_quoted?(content)
+
 
     case Parser.parse_line(content) do
       {:ok, [result], "", _, _, _} ->

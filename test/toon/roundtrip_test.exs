@@ -88,8 +88,16 @@ defmodule Toon.RoundtripTest do
     end
 
     test "mixed type list with empty object" do
-      {_enc, decoded, normalized} = roundtrip([1, "two", :three, %{}, nil, %{}])
-      assert normalized == [1, "two", "three", %{}, nil, %{}]
+      input = [1, "two", :three, %{}, nil, %{}]
+      {_enc, decoded, normalized} = roundtrip(input)
+      assert normalized == input
+      assert decoded == normalized
+    end
+
+    test "mixed type list with map object" do
+      input = [1, "two", :three, %{"a" => %{}, "b" => "b"}]
+      {_enc, decoded, normalized} = roundtrip(input)
+      assert normalized == input
       assert decoded == normalized
     end
 

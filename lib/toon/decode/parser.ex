@@ -121,6 +121,13 @@ defmodule Toon.Decode.Parser do
     |> repeat(delimiter_with_ws |> concat(array_value))
     |> tag(:inline_array)
 
+  # Key-value pair: "key: "
+  empty_kv =
+    key
+    |> ignore(@colon)
+    |> ignore(@space)
+    |> reduce({__MODULE__, :make_empty_kv, []})
+
   # Key-value pair: key: value
   simple_kv =
     key
@@ -150,7 +157,8 @@ defmodule Toon.Decode.Parser do
     choice([
       inline_array_line,
       empty_array_line,
-      simple_kv
+      simple_kv,
+      empty_kv
     ])
 
   defparsec(:parse_line, line)
@@ -180,6 +188,11 @@ defmodule Toon.Decode.Parser do
   @doc false
   def make_kv([{_key_type, key}, {_type, value}]) do
     {key, value}
+  end
+
+  @doc false
+  def make_empty_kv([{_key_type, key}]) do
+    {key, %{}}
   end
 
   @doc false

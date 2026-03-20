@@ -124,13 +124,17 @@ defmodule Toon.Utils do
       iex> Toon.Utils.same_keys?([%{"a" => 1}, %{"b" => 2}])
       false
 
+      iex> Toon.Utils.same_keys?([%{}, %{}])
+      false
+
       iex> Toon.Utils.same_keys?([])
       true
   """
   @spec same_keys?(list()) :: boolean()
   def same_keys?([]), do: true
 
-  def same_keys?([first | rest]) when is_map(first) do
+  # don't treat empty maps has same keys
+  def same_keys?([first | rest]) when is_map(first) and map_size(first) > 0 do
     first_keys = Map.keys(first) |> Enum.sort()
 
     Enum.all?(rest, fn map ->
