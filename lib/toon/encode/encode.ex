@@ -258,6 +258,10 @@ defmodule Toon.Encode do
   end
 
   # Encode a single root list item
+  defp encode_root_list_item(item, _depth, _opts) when is_map(item) and map_size(item) == 0 do
+    [[Constants.list_item_marker(), Constants.space()]]
+  end
+
   defp encode_root_list_item(item, depth, opts) when is_map(item) do
     entries =
       item
@@ -314,9 +318,11 @@ defmodule Toon.Encode do
         ]
 
         # Recursively encode nested items
+
         nested_items =
           Enum.flat_map(item, fn nested_item ->
             nested = encode_root_list_item(nested_item, 0, opts)
+            IO.puts("nested: #{inspect(nested)}")
 
             Enum.map(nested, fn line ->
               [opts.indent_string | line]
