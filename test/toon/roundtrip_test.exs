@@ -87,6 +87,12 @@ defmodule Toon.RoundtripTest do
       assert decoded == normalized
     end
 
+    test "mixed type list with empty object" do
+      {_enc, decoded, normalized} = roundtrip([1, "two", :three, %{}, nil, %{}])
+      assert normalized == [1, "two", "three", %{}, nil, %{}]
+      assert decoded == normalized
+    end
+
     test "nested lists (2 levels)" do
       assert_roundtrip([[1, 2], [3, 4]])
     end
