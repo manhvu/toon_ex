@@ -80,6 +80,40 @@ defmodule Toon.Encode do
     result
   end
 
+  @spec encode_to_iodata!(Toon.Types.input(), keyword()) :: iodata()
+  def encode_to_iodata!(data, opts \\ []) do
+    start_time = System.monotonic_time()
+    metadata = %{data_type: data_type(data)}
+
+    :telemetry.execute(
+      [:toon, :encode_to_iodata, :start],
+      %{system_time: System.system_time()},
+      metadata
+    )
+
+    result =
+      with {:ok, validated_opts} <- Options.validate(opts),
+           {:ok, normalized} <- normalize(data) do
+        do_encode(normalized, 0, validated_opts)
+      else
+        {:error, error} ->
+          raise EncodeError.exception(
+                  message: "Invalid options: #{Exception.message(error)}",
+                  reason: error
+                )
+      end
+
+    duration = System.monotonic_time() - start_time
+
+    :telemetry.execute(
+      [:toon, :encode_to_iodata, :stop],
+      %{duration: duration},
+      metadata
+    )
+
+    result
+  end
+
   defp data_type(data) when is_map(data), do: :map
   defp data_type(data) when is_list(data), do: :list
   defp data_type(nil), do: :null

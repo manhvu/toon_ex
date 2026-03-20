@@ -99,6 +99,9 @@ defmodule Toon do
   @spec encode!(Toon.Types.input(), keyword()) :: String.t()
   defdelegate encode!(data, opts \\ []), to: Encode
 
+  @spec encode!(Toon.Types.input(), keyword()) :: iodata()
+  defdelegate encode_to_iodata!(data, opts \\ []), to: Encode
+
   @doc """
   Decodes TOON format string to Elixir data.
 
