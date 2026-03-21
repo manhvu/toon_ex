@@ -263,6 +263,34 @@ defmodule Toon.RoundtripTest do
     end
   end
 
+  test "list of mix maps" do
+    people = [
+      %{},
+      %{name: "Bob", age: 25},
+      %{}
+    ]
+
+    assert_roundtrip(people)
+  end
+
+  test "list of mix elements" do
+    people = [
+      1,
+      "Hello",
+      %{},
+      %{name: "Bob", age: 25},
+      [1, 2, 4]
+    ]
+
+    assert_roundtrip(people)
+  end
+
+  test "list of mix elements 2" do
+    people = [nil, "1", "room:lobby", "phx_join", %{}]
+
+    assert_roundtrip(people)
+  end
+
   describe "structs with explicit encoder" do
     test "custom date encoder returns string" do
       date = %CustomDate{year: 2024, month: 1, day: 15}
