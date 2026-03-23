@@ -1,12 +1,14 @@
-# Toon
+# ToonEx
 
-[![Hex.pm](https://img.shields.io/hexpm/v/toon.svg)](https://hex.pm/packages/toon_ex)
+[![Hex.pm](https://img.shields.io/hexpm/v/toon_ex.svg)](https://hex.pm/packages/toon_ex)
 [![Documentation](https://img.shields.io/badge/docs-hexdocs-blue.svg)](https://hexdocs.pm/toon_ex)
 [![License: MIT](https://img.shields.io/badge/license-MIT-fef3c0?labelColor=1b1b1f)](./LICENSE.md)
 
 **TOON (Token-Oriented Object Notation)** encoder and decoder for Elixir and Phoenix.
 
 TOON is a compact data format optimized for LLM token efficiency, achieving **30-60% token reduction** compared to JSON while maintaining readability.
+
+TOON is suit for LLM, I try to apply to replace JSON in Phoenix.
 
 ## Features
 
@@ -21,7 +23,7 @@ TOON is a compact data format optimized for LLM token efficiency, achieving **30
 
 ## Installation
 
-Add `toon` to your list of dependencies in `mix.exs`:
+Add `toon_ex` to your list of dependencies in `mix.exs`:
 
 ```elixir
 def deps do
