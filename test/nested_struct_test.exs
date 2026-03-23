@@ -1,7 +1,7 @@
-defmodule Toon.NestedStructTest do
+defmodule ToonEx.NestedStructTest do
   use ExUnit.Case, async: true
 
-  alias Toon.Fixtures.{Company, Person}
+  alias ToonEx.Fixtures.{Company, Person}
 
   describe "nested struct encoding" do
     test "encodes and decodes nested structs correctly" do
@@ -9,13 +9,13 @@ defmodule Toon.NestedStructTest do
       company = %Company{name: "Acme", ceo: person}
 
       # Encode the nested struct
-      encoded = Toon.encode!(company)
+      encoded = ToonEx.encode!(company)
 
       # Should produce TOON format
       assert is_binary(encoded)
 
       # Decode and verify
-      {:ok, decoded} = Toon.decode(encoded)
+      {:ok, decoded} = ToonEx.decode(encoded)
 
       # Verify structure
       assert decoded["name"] == "Acme"
@@ -28,7 +28,7 @@ defmodule Toon.NestedStructTest do
       company = %Company{name: "TechCo", ceo: person}
 
       # normalize should convert nested structs to maps
-      normalized = Toon.Utils.normalize(company)
+      normalized = ToonEx.Utils.normalize(company)
 
       assert is_map(normalized)
       assert normalized["name"] == "TechCo"
@@ -47,8 +47,8 @@ defmodule Toon.NestedStructTest do
       # Create a list of companies (testing nested structs in lists)
       data = %{"companies" => [company1, company2]}
 
-      encoded = Toon.encode!(data)
-      {:ok, decoded} = Toon.decode(encoded)
+      encoded = ToonEx.encode!(data)
+      {:ok, decoded} = ToonEx.decode(encoded)
 
       assert length(decoded["companies"]) == 2
       assert decoded["companies"] |> Enum.at(0) |> Map.get("name") == "StartupA"

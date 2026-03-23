@@ -1,14 +1,14 @@
 defmodule Toon.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
-  @source_url "https://github.com/kentaro/toon_ex"
+  @version "0.1.0"
+  @source_url "https://github.com/manhvu/toon_ex"
 
   def project do
     [
       app: :toon,
       version: @version,
-      elixir: "~> 1.15",
+      elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       description: description(),
@@ -62,9 +62,8 @@ defmodule Toon.MixProject do
       {:telemetry, "~> 1.2"},
 
       # Development dependencies
-      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
-      {:benchee, "~> 1.3", only: :dev, runtime: false},
-      {:jason, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
+      {:benchee, "~> 1.5", only: :dev, runtime: false},
 
       # Test dependencies
       {:excoveralls, "~> 0.18", only: :test},
@@ -78,59 +77,62 @@ defmodule Toon.MixProject do
   defp description do
     """
     TOON (Token-Oriented Object Notation) encoder and decoder for Elixir.
-    A compact data format optimized for LLM token efficiency, achieving 30-60%
-    token reduction compared to JSON while maintaining readability.
+    Forks from https://hex.pm/packages/toon, refactor and add features for Phoenix.
     """
   end
 
   defp package do
     [
       name: "toon",
-      files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md),
+      files: ~w(lib .formatter.exs mix.exs README.md LICENSE),
       licenses: ["MIT"],
       links: %{
-        "GitHub" => @source_url,
-        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md",
-        "TypeScript Version" => "https://github.com/johannschopplich/toon"
+        "GitHub" => @source_url
       },
-      maintainers: ["Kentaro Kuribayashi"]
+      maintainers: ["Manh Vu"]
     ]
   end
 
   defp docs do
     [
-      main: "Toon",
+      main: "ToonEx",
       source_url: @source_url,
       source_ref: "v#{@version}",
       extras: ["README.md", "CHANGELOG.md", "LICENSE"],
       groups_for_modules: [
         Encoding: [
-          Toon.Encode,
-          Toon.Encode.Primitives,
-          Toon.Encode.Objects,
-          Toon.Encode.Arrays,
-          Toon.Encode.Strings,
-          Toon.Encode.Writer,
-          Toon.Encode.Options,
-          Toon.Encoder
+          ToonEx.Encode,
+          ToonEx.Encode.Primitives,
+          ToonEx.Encode.Objects,
+          ToonEx.Encode.Arrays,
+          ToonEx.Encode.Strings,
+          ToonEx.Encode.Writer,
+          ToonEx.Encode.Options,
+          ToonEx.Encoder
         ],
         Decoding: [
-          Toon.Decode,
-          Toon.Decode.Parser,
-          Toon.Decode.Primitives,
-          Toon.Decode.Objects,
-          Toon.Decode.Arrays,
-          Toon.Decode.Strings,
-          Toon.Decode.Options
+          ToonEx.Decode,
+          ToonEx.Decode.Parser,
+          ToonEx.Decode.Primitives,
+          ToonEx.Decode.Objects,
+          ToonEx.Decode.Arrays,
+          ToonEx.Decode.Strings,
+          ToonEx.Decode.Options
+        ],
+        Convertors: [
+          ToonEx.JSON
+        ],
+        ImplHelpers: [
+          ToonEx.ToonImplHelper
         ],
         "Shared Types": [
-          Toon.Types,
-          Toon.Constants,
-          Toon.Utils
+          ToonEx.Types,
+          ToonEx.Constants,
+          ToonEx.Utils
         ],
         Errors: [
-          Toon.EncodeError,
-          Toon.DecodeError
+          ToonEx.EncodeError,
+          ToonEx.DecodeError
         ]
       ]
     ]

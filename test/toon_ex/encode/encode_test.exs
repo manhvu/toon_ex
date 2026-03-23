@@ -1,0 +1,320 @@
+defmodule ToonEx.EncodeTest do
+  use ExUnit.Case, async: true
+
+  # ── primitives ───────────────────────────────────────────────────────────────
+
+  describe "primitive encoding" do
+    test "nil encodes as null" do
+      assert {:ok, "null"} = ToonEx.encode(nil)
+    end
+
+    test "true encodes as true" do
+      assert {:ok, "true"} = ToonEx.encode(true)
+    end
+
+    test "false encodes as false" do
+      assert {:ok, "false"} = ToonEx.encode(false)
+    end
+
+    test "integer" do
+      assert {:ok, "42"} = ToonEx.encode(42)
+    end
+
+    test "negative integer" do
+      assert {:ok, "-17"} = ToonEx.encode(-17)
+    end
+
+    test "zero" do
+      assert {:ok, "0"} = ToonEx.encode(0)
+    end
+
+    test "float" do
+      assert {:ok, "3.14"} = ToonEx.encode(3.14)
+    end
+
+    test "whole-number float omits decimal point" do
+      assert {:ok, "1"} = ToonEx.encode(1.0)
+    end
+
+    test "negative zero normalises to integer 0" do
+      assert {:ok, "0"} = ToonEx.encode(-0.0)
+    end
+
+    # Infinity cannot be constructed via arithmetic on all BEAM versions
+    # (overflowing float raises badarith). The boundary guard is tested via
+    # ToonEx.Utils.NormalizeTest instead.
+
+    test "max representable float encodes without null" do
+      {:ok, result} = ToonEx.encode(1.0e308)
+      refute result == "null"
+    end
+
+    test "small float no scientific notation" do
+      {:ok, result} = ToonEx.encode(1.0e-10)
+      refute String.contains?(result, "e")
+      refute String.contains?(result, "E")
+    end
+
+    test "simple string" do
+      assert {:ok, "hello"} = ToonEx.encode("hello")
+    end
+
+    test "empty string is quoted" do
+      assert {:ok, ~s("")} = ToonEx.encode("")
+    end
+  end
+
+  # ── map encoding ─────────────────────────────────────────────────────────────
+
+  describe "map encoding" do
+    test "empty map encodes to empty string" do
+      assert {:ok, ""} = ToonEx.encode(%{})
+    end
+
+    test "single key-value" do
+      assert {:ok, "name: Alice"} = ToonEx.encode(%{"name" => "Alice"})
+    end
+
+    test "multiple keys are sorted alphabetically" do
+      {:ok, result} = ToonEx.encode(%{"z" => 1, "a" => 2})
+      assert result == "a: 2\nz: 1"
+    end
+
+    test "atom keys are converted to strings" do
+      {:ok, result} = ToonEx.encode(%{name: "Alice"})
+      assert result == "name: Alice"
+    end
+
+    test "nested map" do
+      {:ok, result} = ToonEx.encode(%{"user" => %{"name" => "Bob"}})
+      assert result == "user:\n  name: Bob"
+    end
+
+    test "deeply nested map" do
+      {:ok, result} = ToonEx.encode(%{"a" => %{"b" => %{"c" => 1}}})
+      assert result == "a:\n  b:\n    c: 1"
+    end
+
+    test "empty nested map" do
+      {:ok, result} = ToonEx.encode(%{"meta" => %{}})
+      assert result == "meta:"
+    end
+
+    test "null value" do
+      {:ok, result} = ToonEx.encode(%{"x" => nil})
+      assert result == "x: null"
+    end
+
+    test "key requiring quotes is quoted" do
+      {:ok, result} = ToonEx.encode(%{"full name" => "Alice"})
+      assert result == ~s("full name": Alice)
+    end
+
+    test "key starting with digit is quoted" do
+      {:ok, result} = ToonEx.encode(%{"123" => "val"})
+      assert result == ~s("123": val)
+    end
+
+    test "indent: 4 option" do
+      {:ok, result} = ToonEx.encode(%{"a" => %{"b" => 1}}, indent: 4)
+      assert result == "a:\n    b: 1"
+    end
+  end
+
+  # ── string value quoting ─────────────────────────────────────────────────────
+
+  describe "string quoting rules" do
+    test "string with colon is quoted" do
+      {:ok, result} = ToonEx.encode(%{"x" => "a:b"})
+      assert result == ~s(x: "a:b")
+    end
+
+    test "string that looks like true is quoted" do
+      {:ok, result} = ToonEx.encode(%{"x" => "true"})
+      assert result == ~s(x: "true")
+    end
+
+    test "string that looks like null is quoted" do
+      {:ok, result} = ToonEx.encode(%{"x" => "null"})
+      assert result == ~s(x: "null")
+    end
+
+    test "string that looks like a number is quoted" do
+      {:ok, result} = ToonEx.encode(%{"x" => "42"})
+      assert result == ~s(x: "42")
+    end
+
+    test "string with leading space is quoted" do
+      {:ok, result} = ToonEx.encode(%{"x" => " leading"})
+      assert result == ~s(x: " leading")
+    end
+
+    test "string starting with hyphen is quoted" do
+      {:ok, result} = ToonEx.encode(%{"x" => "-not-a-marker"})
+      assert result == ~s(x: "-not-a-marker")
+    end
+
+    test "string with newline escapes it" do
+      {:ok, result} = ToonEx.encode(%{"x" => "line1\nline2"})
+      assert result == ~s(x: "line1\\nline2")
+    end
+
+    test "string with backslash escapes it" do
+      {:ok, result} = ToonEx.encode(%{"x" => "a\\b"})
+      assert result == ~s(x: "a\\\\b")
+    end
+
+    test "string with tab escapes it" do
+      {:ok, result} = ToonEx.encode(%{"x" => "a\tb"})
+      assert result == ~s(x: "a\\tb")
+    end
+
+    test "string with pipe NOT quoted when delimiter is comma" do
+      {:ok, result} = ToonEx.encode(%{"x" => "a|b"}, delimiter: ",")
+      assert result == "x: a|b"
+    end
+
+    test "string with pipe quoted when delimiter is pipe" do
+      {:ok, result} = ToonEx.encode(%{"x" => "a|b"}, delimiter: "|")
+      assert result == ~s(x: "a|b")
+    end
+  end
+
+  # ── array encoding ───────────────────────────────────────────────────────────
+
+  describe "inline array encoding" do
+    test "empty array" do
+      {:ok, result} = ToonEx.encode(%{"items" => []})
+      assert result == "items[0]:"
+    end
+
+    test "primitive array" do
+      {:ok, result} = ToonEx.encode(%{"tags" => ["a", "b", "c"]})
+      assert result == "tags[3]: a,b,c"
+    end
+
+    test "integer array" do
+      {:ok, result} = ToonEx.encode(%{"ns" => [1, 2, 3]})
+      assert result == "ns[3]: 1,2,3"
+    end
+
+    test "mixed-type array" do
+      {:ok, result} = ToonEx.encode(%{"x" => [1, "hello", true, nil]})
+      assert result == "x[4]: 1,hello,true,null"
+    end
+
+    test "tab delimiter for inline array" do
+      {:ok, result} = ToonEx.encode(%{"x" => [1, 2, 3]}, delimiter: "\t")
+      assert result == "x[3\t]: 1\t2\t3"
+    end
+
+    test "pipe delimiter for inline array" do
+      {:ok, result} = ToonEx.encode(%{"x" => ["a", "b"]}, delimiter: "|")
+      assert result == "x[2|]: a|b"
+    end
+
+    test "length_marker prefix" do
+      {:ok, result} = ToonEx.encode(%{"x" => [1, 2]}, length_marker: "#")
+      assert result == "x[#2]: 1,2"
+    end
+  end
+
+  describe "tabular array encoding" do
+    test "uniform object array uses tabular format" do
+      data = [%{"name" => "Alice", "age" => 30}, %{"name" => "Bob", "age" => 25}]
+      {:ok, result} = ToonEx.encode(%{"users" => data})
+      assert String.contains?(result, "]{")
+      {:ok, decoded} = ToonEx.decode(result)
+      assert decoded["users"] == data
+    end
+
+    test "tabular header sorts fields alphabetically by default" do
+      data = [%{"z" => 1, "a" => 2}]
+      {:ok, result} = ToonEx.encode(%{"rows" => data})
+      assert result =~ "{a,z}:"
+    end
+
+    test "tabular with null values" do
+      data = [%{"x" => nil, "y" => 1}]
+      {:ok, result} = ToonEx.encode(%{"rows" => data})
+      assert String.contains?(result, "null")
+    end
+
+    test "non-uniform object array uses list format" do
+      data = [%{"a" => 1}, %{"b" => 2}]
+      {:ok, result} = ToonEx.encode(%{"items" => data})
+      refute String.contains?(result, "]{")
+      assert String.contains?(result, "- ")
+    end
+
+    test "object array with nested values uses list format" do
+      data = [%{"id" => 1, "meta" => %{"x" => 1}}, %{"id" => 2, "meta" => %{"x" => 2}}]
+      {:ok, result} = ToonEx.encode(%{"items" => data})
+      assert String.contains?(result, "- ")
+    end
+  end
+
+  describe "list array encoding" do
+    test "list of mixed types uses list format" do
+      data = [1, "hello", %{"x" => 1}]
+      {:ok, result} = ToonEx.encode(%{"items" => data})
+      assert String.contains?(result, "- ")
+    end
+
+    test "list of objects with same keys but nested values" do
+      data = [%{"a" => [1, 2]}, %{"a" => [3, 4]}]
+      {:ok, result} = ToonEx.encode(%{"items" => data})
+      assert String.contains?(result, "- ")
+    end
+  end
+
+  # ── root-level array encoding ─────────────────────────────────────────────
+
+  describe "root-level array encoding" do
+    test "root empty array" do
+      {:ok, result} = ToonEx.encode([])
+      assert result == "[0]:"
+    end
+
+    test "root inline primitive array" do
+      {:ok, result} = ToonEx.encode([1, 2, 3])
+      assert result == "[3]: 1,2,3"
+    end
+
+    test "root tabular array" do
+      data = [%{"name" => "Alice", "age" => 30}]
+      {:ok, result} = ToonEx.encode(data)
+      assert result =~ "[1]{"
+    end
+
+    test "root list array of objects" do
+      data = [%{"a" => 1}, %{"b" => 2}]
+      {:ok, result} = ToonEx.encode(data)
+      assert result =~ "- "
+    end
+  end
+
+  # ── options validation ───────────────────────────────────────────────────────
+
+  describe "options validation" do
+    test "invalid indent raises" do
+      assert {:error, _} = ToonEx.encode(%{}, indent: 0)
+    end
+
+    test "invalid delimiter raises" do
+      assert {:error, _} = ToonEx.encode(%{}, delimiter: ";")
+    end
+
+    test "empty delimiter raises" do
+      assert {:error, _} = ToonEx.encode(%{}, delimiter: "")
+    end
+
+    test "multi-char delimiter raises" do
+      assert {:error, _} = ToonEx.encode(%{}, delimiter: ",,")
+    end
+
+    test "unknown option raises" do
+      assert {:error, _} = ToonEx.encode(%{}, unknown_opt: true)
+    end
+  end
+end

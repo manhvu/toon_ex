@@ -1,22 +1,12 @@
 # Toon
 
-[![Hex.pm](https://img.shields.io/hexpm/v/toon.svg)](https://hex.pm/packages/toon)
-[![Documentation](https://img.shields.io/badge/docs-hexdocs-blue.svg)](https://hexdocs.pm/toon)
-[![Coverage Status](https://coveralls.io/repos/github/xu-chris/toon_ex/badge.svg?branch=main)](https://coveralls.io/github/xu-chris/toon_ex?branch=main)
-[![SPEC v3.0](https://img.shields.io/badge/spec-v3.0-fef3c0?labelColor=1b1b1f)](https://github.com/toon-format/spec)
+[![Hex.pm](https://img.shields.io/hexpm/v/toon.svg)](https://hex.pm/packages/toon_ex)
+[![Documentation](https://img.shields.io/badge/docs-hexdocs-blue.svg)](https://hexdocs.pm/toon_ex)
 [![License: MIT](https://img.shields.io/badge/license-MIT-fef3c0?labelColor=1b1b1f)](./LICENSE.md)
 
-**TOON (Token-Oriented Object Notation)** encoder and decoder for Elixir.
+**TOON (Token-Oriented Object Notation)** encoder and decoder for Elixir and Phoenix.
 
 TOON is a compact data format optimized for LLM token efficiency, achieving **30-60% token reduction** compared to JSON while maintaining readability.
-
-## 🎯 Specification Compliance
-
-This implementation is tested against the [official TOON specification v3.0.1](https://github.com/toon-format/spec) (2025-12-05) using the official test fixtures.
-
-**Test Fixtures:** [toon-format/spec@f9af6fa](https://github.com/toon-format/spec/tree/v3.0.1)
-
-Tests validate semantic equivalence (both outputs decode to the same data structure), ensuring correctness independent of Elixir 1.19's automatic key sorting.
 
 ## Features
 
@@ -27,6 +17,7 @@ Tests validate semantic equivalence (both outputs decode to the same data struct
 - 🛡️ **Type Safe**: Full Dialyzer support with comprehensive typespecs
 - 🔌 **Protocol Support**: Custom encoding via `Toon.Encoder` protocol
 - 📊 **Telemetry**: Built-in instrumentation for monitoring
+- 🛠️ **Convertor**: Support convert between JSON & TOON
 
 ## Installation
 
@@ -35,7 +26,7 @@ Add `toon` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:toon, "~> 0.3.0"}
+    {:toon_ex, "~> 0.1.0"}
   ]
 end
 ```
@@ -46,29 +37,29 @@ end
 
 ```elixir
 # Simple object
-Toon.encode!(%{"name" => "Alice", "age" => 30})
+ToonEx.encode!(%{"name" => "Alice", "age" => 30})
 # => "age: 30\\nname: Alice"
 
 # Nested object
-Toon.encode!(%{"user" => %{"name" => "Bob"}})
+ToonEx.encode!(%{"user" => %{"name" => "Bob"}})
 # => "user:\\n  name: Bob"
 
 # Arrays
-Toon.encode!(%{"tags" => ["elixir", "toon"]})
+ToonEx.encode!(%{"tags" => ["elixir", "toon"]})
 # => "tags[2]: elixir,toon"
 ```
 
 ### Decoding
 
 ```elixir
-Toon.decode!("name: Alice\\nage: 30")
+ToonEx.decode!("name: Alice\\nage: 30")
 # => %{"name" => "Alice", "age" => 30}
 
-Toon.decode!("tags[2]: a,b")
+ToonEx.decode!("tags[2]: a,b")
 # => %{"tags" => ["a", "b"]}
 
 # With options
-Toon.decode!("user:\\n    name: Alice", indent_size: 4)
+ToonEx.decode!("user:\\n    name: Alice", indent_size: 4)
 # => %{"user" => %{"name" => "Alice"}}
 ```
 
@@ -77,25 +68,25 @@ Toon.decode!("user:\\n    name: Alice", indent_size: 4)
 ### Primitives
 
 ```elixir
-Toon.encode!(nil)            # => "null"
-Toon.encode!(true)           # => "true"
-Toon.encode!(42)             # => "42"
-Toon.encode!(3.14)           # => "3.14"
-Toon.encode!("hello")        # => "hello"
-Toon.encode!("hello world")  # => "\\"hello world\\"" (auto-quoted)
+ToonEx.encode!(nil)            # => "null"
+ToonEx.encode!(true)           # => "true"
+ToonEx.encode!(42)             # => "42"
+ToonEx.encode!(3.14)           # => "3.14"
+ToonEx.encode!("hello")        # => "hello"
+ToonEx.encode!("hello world")  # => "\\"hello world\\"" (auto-quoted)
 ```
 
 ### Objects
 
 ```elixir
 # Simple objects
-Toon.encode!(%{"name" => "Alice", "age" => 30})
+ToonEx.encode!(%{"name" => "Alice", "age" => 30})
 # =>
 # age: 30
 # name: Alice
 
 # Nested objects
-Toon.encode!(%{
+ToonEx.encode!(%{
   "user" => %{
     "name" => "Bob",
     "email" => "bob@example.com"
@@ -111,11 +102,11 @@ Toon.encode!(%{
 
 ```elixir
 # Inline arrays (primitives)
-Toon.encode!(%{"tags" => ["elixir", "toon", "llm"]})
+ToonEx.encode!(%{"tags" => ["elixir", "toon", "llm"]})
 # => "tags[3]: elixir,toon,llm"
 
 # Tabular arrays (uniform objects)
-Toon.encode!(%{
+ToonEx.encode!(%{
   "users" => [
     %{"name" => "Alice", "age" => 30},
     %{"name" => "Bob", "age" => 25}
@@ -124,7 +115,7 @@ Toon.encode!(%{
 # => "users[2]{age,name}:\\n  30,Alice\\n  25,Bob"
 
 # List-style arrays (mixed or nested)
-Toon.encode!(%{
+ToonEx.encode!(%{
   "items" => [
     %{"type" => "book", "title" => "Elixir Guide"},
     %{"type" => "video", "duration" => 120}
@@ -137,18 +128,18 @@ Toon.encode!(%{
 
 ```elixir
 # Custom delimiters
-Toon.encode!(%{"tags" => ["a", "b", "c"]}, delimiter: "\\t")
+ToonEx.encode!(%{"tags" => ["a", "b", "c"]}, delimiter: "\\t")
 # => "tags[3\\t]: a\\tb\\tc"
 
-Toon.encode!(%{"values" => [1, 2, 3]}, delimiter: "|")
+ToonEx.encode!(%{"values" => [1, 2, 3]}, delimiter: "|")
 # => "values[3|]: 1|2|3"
 
 # Length markers
-Toon.encode!(%{"tags" => ["a", "b", "c"]}, length_marker: "#")
+ToonEx.encode!(%{"tags" => ["a", "b", "c"]}, length_marker: "#")
 # => "tags[#3]: a,b,c"
 
 # Custom indentation
-Toon.encode!(%{"user" => %{"name" => "Alice"}}, indent: 4)
+ToonEx.encode!(%{"user" => %{"name" => "Alice"}}, indent: 4)
 # => "user:\\n    name: Alice"
 ```
 
@@ -156,15 +147,15 @@ Toon.encode!(%{"user" => %{"name" => "Alice"}}, indent: 4)
 
 ```elixir
 # Atom keys
-Toon.decode!("name: Alice", keys: :atoms)
+ToonEx.decode!("name: Alice", keys: :atoms)
 # => %{name: "Alice"}
 
 # Custom indent size
-Toon.decode!("user:\\n    name: Alice", indent_size: 4)
+ToonEx.decode!("user:\\n    name: Alice", indent_size: 4)
 # => %{"user" => %{"name" => "Alice"}}
 
 # Strict mode (default: true)
-Toon.decode!("  name: Alice", strict: false)  # Accepts non-standard indentation
+ToonEx.decode!("  name: Alice", strict: false)  # Accepts non-standard indentation
 # => %{"name" => "Alice"}
 ```
 
@@ -172,42 +163,15 @@ Toon.decode!("  name: Alice", strict: false)  # Accepts non-standard indentation
 
 This implementation is tested against the [official TOON specification v1.3](https://github.com/toon-format/spec).
 
-### Test Results
-
-```bash
-$ mix test
-306 tests, 0 failures
-
-All official TOON specification tests passing (100%)
-```
-
-### Fully Supported Features
-
-**Decoder (100% compliant):**
-- ✅ All primitive types (strings, numbers, booleans, null)
-- ✅ Nested objects with arbitrary depth
-- ✅ All three array formats (inline, tabular, list)
-- ✅ Custom delimiters (comma, tab, pipe)
-- ✅ Quoted strings with escapes (\\\\, \\", \\n, \\r, \\t)
-- ✅ Leading zero handling ("05" → string, not number)
-- ✅ Strict mode validation (indentation, blank lines, array lengths)
-- ✅ Root primitives, arrays, and objects
-- ✅ Unicode support (emoji, multi-byte characters)
-
-**Encoder (100% compliant):**
-- ✅ All primitive types with proper quoting
-- ✅ Nested objects with correct indentation
-- ✅ All three array formats (inline, tabular, list)
-- ✅ Custom delimiters and length markers
-- ✅ Escape sequences
-- ✅ Number normalization (-0 → 0, proper precision)
-- ✅ Root primitives, arrays, and objects
-- ✅ Delimiter-aware quoting
-- ✅ Complex nested structures (arrays in list items, etc.)
-
 ### Testing Approach
 
 Tests use **semantic equivalence** checking: both encoder output and expected output are decoded and compared. This ensures correctness while accommodating Elixir 1.19's automatic map key sorting (outputs may differ in key order but decode to identical data structures).
+
+## Limitation
+
+Not support for validated TOON in current version.
+
+Not optimized for high traffic application yet.
 
 ## Testing
 
@@ -218,7 +182,7 @@ The test suite uses official TOON specification fixtures:
 mix test
 
 # Run only fixture-based tests
-mix test test/toon/fixtures_test.exs
+mix test test/toon_ex/fixtures_test.exs
 ```
 
 Test fixtures are loaded from the [toon-format/spec](https://github.com/toon-format/spec) repository via git submodule.
@@ -227,19 +191,17 @@ Test fixtures are loaded from the [toon-format/spec](https://github.com/toon-for
 
 This implementation follows [TOON Specification v1.3](https://github.com/toon-format/spec/blob/main/SPEC.md).
 
-## TypeScript Version
-
-This is an Elixir port of the reference implementation: [toon-format/toon](https://github.com/toon-format/toon).
-
 ## Contributing
 
-Contributions are welcome! Please ensure all official specification tests pass before submitting PRs.
+Contributions are welcome!
 
 ## Author
 
+Created by
 **Kentaro Kuribayashi**
-- GitHub: [@kentaro](https://github.com/kentaro)
-- Repository: [kentaro/toon_ex](https://github.com/kentaro/toon_ex)
+
+Forked and updated by
+**Manh Vu**
 
 ## License
 

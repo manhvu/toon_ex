@@ -1,4 +1,4 @@
-defmodule Toon.Fixtures.Complex do
+defmodule ToonEx.Fixtures.Complex do
   @moduledoc """
   Realistic, deeply nested structs used by the complex encode/decode test suite.
 
@@ -16,12 +16,12 @@ defmodule Toon.Fixtures.Complex do
   # ── leaf structs ────────────────────────────────────────────────────────────
 
   defmodule Address do
-    @derive Toon.Encoder
+    @derive ToonEx.Encoder
     defstruct [:street, :city, :country, :postcode]
   end
 
   defmodule Project do
-    @derive Toon.Encoder
+    @derive ToonEx.Encoder
     defstruct [:id, :name, :active, :score]
   end
 
@@ -30,23 +30,23 @@ defmodule Toon.Fixtures.Complex do
     defstruct [:amount, :currency]
   end
 
-  defimpl Toon.Encoder, for: Budget do
+  defimpl ToonEx.Encoder, for: Budget do
     def encode(%{amount: a, currency: c}, _opts),
       do: "#{a} #{c}"
   end
 
   defmodule Employee do
-    @derive {Toon.Encoder, except: [:secret]}
+    @derive {ToonEx.Encoder, except: [:secret]}
     defstruct [:id, :name, :role, :salary, :active, :tags, :address, :projects, :secret]
   end
 
   defmodule Department do
-    @derive Toon.Encoder
+    @derive ToonEx.Encoder
     defstruct [:id, :name, :head, :employees, :budget, :metadata]
   end
 
   defmodule Organisation do
-    @derive Toon.Encoder
+    @derive ToonEx.Encoder
     defstruct [:id, :name, :founded, :public, :rating, :departments, :notes]
   end
 
