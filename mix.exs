@@ -1,4 +1,4 @@
-defmodule Toon.MixProject do
+defmodule ToonEx.MixProject do
   use Mix.Project
 
   @version "0.1.0"
@@ -6,7 +6,7 @@ defmodule Toon.MixProject do
 
   def project do
     [
-      app: :toon,
+      app: :toon_ex,
       version: @version,
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
@@ -83,7 +83,7 @@ defmodule Toon.MixProject do
 
   defp package do
     [
-      name: "toon",
+      name: "toon_ex",
       files: ~w(lib .formatter.exs mix.exs README.md LICENSE),
       licenses: ["MIT"],
       links: %{

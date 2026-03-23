@@ -39,7 +39,11 @@ defmodule ToonEx.Decode do
     start_time = System.monotonic_time()
     metadata = %{input_size: byte_size(string)}
 
-    :telemetry.execute([:toon, :decode, :start], %{system_time: System.system_time()}, metadata)
+    :telemetry.execute(
+      [:toon_ex, :decode, :start],
+      %{system_time: System.system_time()},
+      metadata
+    )
 
     result =
       case Options.validate(opts) do
@@ -72,14 +76,14 @@ defmodule ToonEx.Decode do
     case result do
       {:ok, _decoded} ->
         :telemetry.execute(
-          [:toon, :decode, :stop],
+          [:toon_ex, :decode, :stop],
           %{duration: duration},
           metadata
         )
 
       {:error, error} ->
         :telemetry.execute(
-          [:toon, :decode, :exception],
+          [:toon_ex, :decode, :exception],
           %{duration: duration},
           Map.put(metadata, :error, error)
         )

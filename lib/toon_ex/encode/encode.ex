@@ -38,7 +38,11 @@ defmodule ToonEx.Encode do
     start_time = System.monotonic_time()
     metadata = %{data_type: data_type(data)}
 
-    :telemetry.execute([:toon, :encode, :start], %{system_time: System.system_time()}, metadata)
+    :telemetry.execute(
+      [:toon_ex, :encode, :start],
+      %{system_time: System.system_time()},
+      metadata
+    )
 
     result =
       with {:ok, validated_opts} <- Options.validate(opts),
@@ -64,14 +68,14 @@ defmodule ToonEx.Encode do
     case result do
       {:ok, encoded} ->
         :telemetry.execute(
-          [:toon, :encode, :stop],
+          [:toon_ex, :encode, :stop],
           %{duration: duration, size: byte_size(encoded)},
           metadata
         )
 
       {:error, error} ->
         :telemetry.execute(
-          [:toon, :encode, :exception],
+          [:toon_ex, :encode, :exception],
           %{duration: duration},
           Map.put(metadata, :error, error)
         )
@@ -86,7 +90,7 @@ defmodule ToonEx.Encode do
     metadata = %{data_type: data_type(data)}
 
     :telemetry.execute(
-      [:toon, :encode_to_iodata, :start],
+      [:toon_ex, :encode_to_iodata, :start],
       %{system_time: System.system_time()},
       metadata
     )
@@ -106,7 +110,7 @@ defmodule ToonEx.Encode do
     duration = System.monotonic_time() - start_time
 
     :telemetry.execute(
-      [:toon, :encode_to_iodata, :stop],
+      [:toon_ex, :encode_to_iodata, :stop],
       %{duration: duration},
       metadata
     )
