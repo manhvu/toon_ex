@@ -31,13 +31,13 @@ defmodule ToonEx.Utils do
 
   ## Examples
 
-      iex> Toon.Utils.list?([])
+      iex> ToonEx.Utils.list?([])
       true
 
-      iex> Toon.Utils.list?([1, 2, 3])
+      iex> ToonEx.Utils.list?([1, 2, 3])
       true
 
-      iex> Toon.Utils.list?(%{})
+      iex> ToonEx.Utils.list?(%{})
       false
   """
   @spec list?(term()) :: boolean()
@@ -210,7 +210,7 @@ defmodule ToonEx.Utils do
     Enum.map(value, &normalize/1)
   end
 
-  # Structs - dispatch to Toon.Encoder protocol
+  # Structs - dispatch to ToonEx.Encoder protocol
   def normalize(%{__struct__: _} = struct) do
     result = ToonEx.Encoder.encode(struct, [])
 

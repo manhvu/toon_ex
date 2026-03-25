@@ -84,7 +84,7 @@ defmodule ToonEx.Encode do
     result
   end
 
-  @spec encode_to_iodata!(Toon.Types.input(), keyword()) :: iodata()
+  @spec encode_to_iodata!(ToonEx.Types.input(), keyword()) :: iodata()
   def encode_to_iodata!(data, opts \\ []) do
     start_time = System.monotonic_time()
     metadata = %{data_type: data_type(data)}
@@ -131,10 +131,10 @@ defmodule ToonEx.Encode do
 
   ## Examples
 
-      iex> Toon.Encode.encode!(%{"name" => "Alice"})
+      iex> ToonEx.Encode.encode!(%{"name" => "Alice"})
       "name: Alice"
 
-      iex> Toon.Encode.encode!(%{"tags" => ["a", "b"]})
+      iex> ToonEx.Encode.encode!(%{"tags" => ["a", "b"]})
       "tags[2]: a,b"
   """
   @spec encode!(ToonEx.Types.input(), keyword()) :: String.t()

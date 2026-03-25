@@ -58,16 +58,16 @@ defmodule ToonEx.Encode.Options do
 
   ## Examples
 
-      iex> Toon.Encode.Options.validate([])
+      iex> ToonEx.Encode.Options.validate([])
       {:ok, %{indent: 2, delimiter: ",", length_marker: nil, indent_string: "  "}}
 
-      iex> Toon.Encode.Options.validate(indent: 4, delimiter: "\\t")
+      iex> ToonEx.Encode.Options.validate(indent: 4, delimiter: "\\t")
       {:ok, %{indent: 4, delimiter: "\\t", length_marker: nil, indent_string: "    "}}
 
-      iex> match?({:error, _}, Toon.Encode.Options.validate(indent: -1))
+      iex> match?({:error, _}, ToonEx.Encode.Options.validate(indent: -1))
       true
 
-      iex> match?({:error, _}, Toon.Encode.Options.validate(delimiter: "invalid"))
+      iex> match?({:error, _}, ToonEx.Encode.Options.validate(delimiter: "invalid"))
       true
   """
   @spec validate(keyword()) :: {:ok, map()} | {:error, NimbleOptions.ValidationError.t()}
@@ -103,10 +103,10 @@ defmodule ToonEx.Encode.Options do
 
   ## Examples
 
-      iex> Toon.Encode.Options.validate!([])
+      iex> ToonEx.Encode.Options.validate!([])
       %{indent: 2, delimiter: ",", length_marker: nil, indent_string: "  "}
 
-      iex> Toon.Encode.Options.validate!(indent: 4)
+      iex> ToonEx.Encode.Options.validate!(indent: 4)
       %{indent: 4, delimiter: ",", length_marker: nil, indent_string: "    "}
   """
   @spec validate!(keyword()) :: validated()

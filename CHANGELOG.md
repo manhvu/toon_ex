@@ -76,7 +76,7 @@ Tested against official fixtures from [toon-format/spec@b9c71f7](https://github.
 - Initial implementation of TOON encoder and decoder for Elixir
 - Full TOON format support (primitives, objects, arrays)
 - Three array formats: inline, tabular, and list
-- `Toon.Encoder` protocol for custom struct encoding
+- `ToonEx.Encoder` protocol for custom struct encoding
 - Comprehensive type specifications with Dialyzer support
 - Telemetry instrumentation for encoding and decoding operations
 - Property-based testing with StreamData

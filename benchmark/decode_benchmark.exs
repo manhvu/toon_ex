@@ -22,9 +22,9 @@ json_medium =
 
 Benchee.run(
   %{
-    "Toon.decode! (small)" => fn -> ToonEx.decode!(toon_small) end,
+    "ToonEx.decode! (small)" => fn -> ToonEx.decode!(toon_small) end,
     "Jason.decode! (small)" => fn -> JSON.decode!(json_small) end,
-    "Toon.decode! (medium)" => fn -> ToonEx.decode!(toon_medium) end,
+    "ToonEx.decode! (medium)" => fn -> ToonEx.decode!(toon_medium) end,
     "Jason.decode! (medium)" => fn -> JSON.decode!(json_medium) end
   },
   time: 5,

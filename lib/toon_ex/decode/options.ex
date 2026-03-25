@@ -37,13 +37,13 @@ defmodule ToonEx.Decode.Options do
 
   ## Examples
 
-      iex> Toon.Decode.Options.validate([])
+      iex> ToonEx.Decode.Options.validate([])
       {:ok, %{keys: :strings, strict: true, indent_size: 2}}
 
-      iex> Toon.Decode.Options.validate(keys: :atoms)
+      iex> ToonEx.Decode.Options.validate(keys: :atoms)
       {:ok, %{keys: :atoms, strict: true, indent_size: 2}}
 
-      iex> match?({:error, _}, Toon.Decode.Options.validate(keys: :invalid))
+      iex> match?({:error, _}, ToonEx.Decode.Options.validate(keys: :invalid))
       true
   """
   @spec validate(keyword()) :: {:ok, map()} | {:error, NimbleOptions.ValidationError.t()}

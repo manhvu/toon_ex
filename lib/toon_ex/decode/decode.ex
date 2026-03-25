@@ -97,10 +97,10 @@ defmodule ToonEx.Decode do
 
   ## Examples
 
-      iex> Toon.Decode.decode!("name: Alice")
+      iex> ToonEx.Decode.decode!("name: Alice")
       %{"name" => "Alice"}
 
-      iex> Toon.Decode.decode!("count: 42")
+      iex> ToonEx.Decode.decode!("count: 42")
       %{"count" => 42}
   """
   @spec decode!(String.t(), keyword()) :: decoded()

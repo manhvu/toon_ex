@@ -45,7 +45,7 @@ defmodule ToonEx do
 
   ## Custom Encoding
 
-  You can implement the `Toon.Encoder` protocol for your structs:
+  You can implement the `ToonEx.Encoder` protocol for your structs:
 
       defmodule User do
         @derive {ToonEx.Encoder, only: [:name, :email]}

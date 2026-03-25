@@ -56,16 +56,16 @@ defimpl ToonEx.Encoder, for: Any do
       protocol: @protocol,
       value: struct,
       description: """
-      Toon.Encoder protocol must be explicitly implemented for structs.
+      ToonEx.Encoder protocol must be explicitly implemented for structs.
 
       You can derive the implementation using:
 
-          @derive {Toon.Encoder, only: [...]}
+          @derive {ToonEx.Encoder, only: [...]}
           defstruct ...
 
       or:
 
-          @derive Toon.Encoder
+          @derive ToonEx.Encoder
           defstruct ...
       """
   end

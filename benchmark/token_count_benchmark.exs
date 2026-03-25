@@ -3,21 +3,24 @@
 
 data_sets = [
   {"Small object", %{"name" => "Alice", "age" => 30}},
-  {"Medium object", %{
-    "user" => %{"name" => "Bob", "email" => "bob@example.com"},
-    "tags" => ["elixir", "toon", "llm"]
-  }},
-  {"Array of objects", %{
-    "users" => Enum.map(1..10, fn i ->
-      %{"name" => "User#{i}", "age" => 20 + i}
-    end)
-  }}
+  {"Medium object",
+   %{
+     "user" => %{"name" => "Bob", "email" => "bob@example.com"},
+     "tags" => ["elixir", "toon", "llm"]
+   }},
+  {"Array of objects",
+   %{
+     "users" =>
+       Enum.map(1..10, fn i ->
+         %{"name" => "User#{i}", "age" => 20 + i}
+       end)
+   }}
 ]
 
 IO.puts("\n=== Token Efficiency Comparison ===\n")
 
 Enum.each(data_sets, fn {name, data} ->
-  toon = Toon.encode!(data)
+  toon = ToonEx.encode!(data)
   json = Jason.encode!(data)
 
   toon_size = byte_size(toon)

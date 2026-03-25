@@ -17,7 +17,7 @@ TOON is suit for LLM, I try to apply to replace JSON in Phoenix.
 - 🔧 **Three Array Formats**: Inline, tabular, and list formats
 - ✅ **Spec Compliant**: Tested against official TOON v1.3 specification
 - 🛡️ **Type Safe**: Full Dialyzer support with comprehensive typespecs
-- 🔌 **Protocol Support**: Custom encoding via `Toon.Encoder` protocol
+- 🔌 **Protocol Support**: Custom encoding via `ToonEx.Encoder` protocol
 - 📊 **Telemetry**: Built-in instrumentation for monitoring
 - 🛠️ **Convertor**: Support convert between JSON & TOON
 

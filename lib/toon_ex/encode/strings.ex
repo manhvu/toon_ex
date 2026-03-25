@@ -12,16 +12,16 @@ defmodule ToonEx.Encode.Strings do
 
   ## Examples
 
-      iex> Toon.Encode.Strings.encode_string("hello")
+      iex> ToonEx.Encode.Strings.encode_string("hello")
       "hello"
 
-      iex> Toon.Encode.Strings.encode_string("") |> IO.iodata_to_binary()
+      iex> ToonEx.Encode.Strings.encode_string("") |> IO.iodata_to_binary()
       ~s("")
 
-      iex> Toon.Encode.Strings.encode_string("hello world")
+      iex> ToonEx.Encode.Strings.encode_string("hello world")
       "hello world"
 
-      iex> Toon.Encode.Strings.encode_string("line1\\nline2") |> IO.iodata_to_binary()
+      iex> ToonEx.Encode.Strings.encode_string("line1\\nline2") |> IO.iodata_to_binary()
       ~s("line1\\\\nline2")
   """
   @spec encode_string(String.t(), String.t()) :: binary() | nonempty_list(binary())
@@ -43,19 +43,19 @@ defmodule ToonEx.Encode.Strings do
 
   ## Examples
 
-      iex> Toon.Encode.Strings.encode_key("name")
+      iex> ToonEx.Encode.Strings.encode_key("name")
       "name"
 
-      iex> Toon.Encode.Strings.encode_key("user_name")
+      iex> ToonEx.Encode.Strings.encode_key("user_name")
       "user_name"
 
-      iex> Toon.Encode.Strings.encode_key("user.name")
+      iex> ToonEx.Encode.Strings.encode_key("user.name")
       "user.name"
 
-      iex> Toon.Encode.Strings.encode_key("user name") |> IO.iodata_to_binary()
+      iex> ToonEx.Encode.Strings.encode_key("user name") |> IO.iodata_to_binary()
       ~s("user name")
 
-      iex> Toon.Encode.Strings.encode_key("123") |> IO.iodata_to_binary()
+      iex> ToonEx.Encode.Strings.encode_key("123") |> IO.iodata_to_binary()
       ~s("123")
   """
   @spec encode_key(String.t()) :: String.t() | [String.t(), ...]
@@ -81,19 +81,19 @@ defmodule ToonEx.Encode.Strings do
 
   ## Examples
 
-      iex> Toon.Encode.Strings.safe_unquoted?("hello", ",")
+      iex> ToonEx.Encode.Strings.safe_unquoted?("hello", ",")
       true
 
-      iex> Toon.Encode.Strings.safe_unquoted?("", ",")
+      iex> ToonEx.Encode.Strings.safe_unquoted?("", ",")
       false
 
-      iex> Toon.Encode.Strings.safe_unquoted?(" hello", ",")
+      iex> ToonEx.Encode.Strings.safe_unquoted?(" hello", ",")
       false
 
-      iex> Toon.Encode.Strings.safe_unquoted?("true", ",")
+      iex> ToonEx.Encode.Strings.safe_unquoted?("true", ",")
       false
 
-      iex> Toon.Encode.Strings.safe_unquoted?("42", ",")
+      iex> ToonEx.Encode.Strings.safe_unquoted?("42", ",")
       false
   """
   @spec safe_unquoted?(String.t(), String.t()) :: boolean()
@@ -124,22 +124,22 @@ defmodule ToonEx.Encode.Strings do
 
   ## Examples
 
-      iex> Toon.Encode.Strings.safe_key?("name")
+      iex> ToonEx.Encode.Strings.safe_key?("name")
       true
 
-      iex> Toon.Encode.Strings.safe_key?("user_name")
+      iex> ToonEx.Encode.Strings.safe_key?("user_name")
       true
 
-      iex> Toon.Encode.Strings.safe_key?("User123")
+      iex> ToonEx.Encode.Strings.safe_key?("User123")
       true
 
-      iex> Toon.Encode.Strings.safe_key?("user.name")
+      iex> ToonEx.Encode.Strings.safe_key?("user.name")
       true
 
-      iex> Toon.Encode.Strings.safe_key?("user-name")
+      iex> ToonEx.Encode.Strings.safe_key?("user-name")
       false
 
-      iex> Toon.Encode.Strings.safe_key?("123")
+      iex> ToonEx.Encode.Strings.safe_key?("123")
       false
   """
   @spec safe_key?(String.t()) :: boolean()
@@ -152,13 +152,13 @@ defmodule ToonEx.Encode.Strings do
 
   ## Examples
 
-      iex> Toon.Encode.Strings.escape_string("hello")
+      iex> ToonEx.Encode.Strings.escape_string("hello")
       "hello"
 
-      iex> Toon.Encode.Strings.escape_string("line1\\nline2")
+      iex> ToonEx.Encode.Strings.escape_string("line1\\nline2")
       "line1\\\\nline2"
 
-      iex> result = Toon.Encode.Strings.escape_string(~s(say "hello"))
+      iex> result = ToonEx.Encode.Strings.escape_string(~s(say "hello"))
       iex> String.contains?(result, ~s(\\"))
       true
   """

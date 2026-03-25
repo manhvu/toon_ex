@@ -2,7 +2,7 @@
 #
 # Protocol fallback implementation that intentionally raises.
 # This is expected behavior - the Any implementation raises Protocol.UndefinedError
-# when a struct doesn't have an explicit Toon.Encoder implementation.
+# when a struct doesn't have an explicit ToonEx.Encoder implementation.
 [
-  {"lib/toon/encoder.ex", :no_return}
+  {"lib/toon_ex/encoder.ex", :no_return}
 ]

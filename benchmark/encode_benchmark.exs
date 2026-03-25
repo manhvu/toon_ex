@@ -31,11 +31,11 @@ data_large = %{
 
 Benchee.run(
   %{
-    "Toon.encode! (small)" => fn -> ToonEx.encode!(data_small) end,
+    "ToonEx.encode! (small)" => fn -> ToonEx.encode!(data_small) end,
     "Jason.encode! (small)" => fn -> JSON.encode!(data_small) end,
-    "Toon.encode! (medium)" => fn -> ToonEx.encode!(data_medium) end,
+    "ToonEx.encode! (medium)" => fn -> ToonEx.encode!(data_medium) end,
     "Jason.encode! (medium)" => fn -> JSON.encode!(data_medium) end,
-    "Toon.encode! (large)" => fn -> ToonEx.encode!(data_large) end,
+    "ToonEx.encode! (large)" => fn -> ToonEx.encode!(data_large) end,
     "Jason.encode! (large)" => fn -> JSON.encode!(data_large) end
   },
   time: 5,

@@ -102,7 +102,7 @@ defmodule ToonEx.Encode.Arrays do
 
       iex> opts = %{delimiter: ",", length_marker: nil, indent_string: "  "}
       iex> users = [%{"name" => "Alice", "age" => 30}, %{"name" => "Bob", "age" => 25}]
-      iex> [header | rows] = Toon.Encode.Arrays.encode_tabular("users", users, 0, opts)
+      iex> [header | rows] = ToonEx.Encode.Arrays.encode_tabular("users", users, 0, opts)
       iex> IO.iodata_to_binary(header)
       "users[2]{age,name}:"
       iex> Enum.map(rows, &IO.iodata_to_binary/1)
@@ -168,7 +168,7 @@ defmodule ToonEx.Encode.Arrays do
 
       iex> opts = %{delimiter: ",", length_marker: nil, indent_string: "  "}
       iex> items = [%{"title" => "Book", "price" => 9}, %{"title" => "Movie", "duration" => 120}]
-      iex> [header | list_items] = Toon.Encode.Arrays.encode_list("items", items, 0, opts)
+      iex> [header | list_items] = ToonEx.Encode.Arrays.encode_list("items", items, 0, opts)
       iex> IO.iodata_to_binary(header)
       "items[2]:"
       iex> Enum.map(list_items, &IO.iodata_to_binary/1)
