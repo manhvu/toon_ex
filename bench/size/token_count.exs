@@ -11,9 +11,26 @@ data_sets = [
   {"Array of objects",
    %{
      "users" =>
-       Enum.map(1..10, fn i ->
+       Enum.map(1..100, fn i ->
+         %{"name" => "User#{i}", "age" => 20 + i, "meta: #{i}" => i}
+       end)
+   }},
+  {"Array of objects - Tabular",
+   %{
+     "users" =>
+       Enum.map(1..100, fn i ->
          %{"name" => "User#{i}", "age" => 20 + i}
        end)
+   }},
+  {"Nested object",
+   %{
+     "user" => %{"name" => "Bob", "email" => "bob@example.com"},
+     "meta" => %{
+       "login" => %{
+         "count" => 1000,
+         "session" => %{"last" => %{"ip" => "192.168.0.2"}, "old" => %{"ip" => "192.168.0.32"}}
+       }
+     }
    }}
 ]
 

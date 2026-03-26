@@ -1,6 +1,3 @@
-toon_small = "name: Alice\nage: 30"
-json_small = JSON.encode!(%{"name" => "Alice", "age" => 30})
-
 toon_medium = """
 id: 123
 name: Bob
@@ -11,7 +8,7 @@ tags[4]: elixir,toon,llm,encoding
 """
 
 json_medium =
-  Jason.encode!(%{
+  JSON.encode!(%{
     "id" => 123,
     "name" => "Bob",
     "email" => "bob@example.com",
@@ -22,11 +19,12 @@ json_medium =
 
 Benchee.run(
   %{
-    "ToonEx.decode! (small)" => fn -> ToonEx.decode!(toon_small) end,
-    "Jason.decode! (small)" => fn -> JSON.decode!(json_small) end,
     "ToonEx.decode! (medium)" => fn -> ToonEx.decode!(toon_medium) end,
-    "Jason.decode! (medium)" => fn -> JSON.decode!(json_medium) end
+    "JSON.decode! (medium)" => fn -> JSON.decode!(json_medium) end
   },
-  time: 5,
-  memory_time: 2
+  time: 10,
+  memory_time: 2,
+  formatters: [
+    Benchee.Formatters.Console
+  ]
 )
