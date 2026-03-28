@@ -1,7 +1,7 @@
 defmodule ToonEx.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.3.1"
   @source_url "https://github.com/manhvu/toon_ex"
 
   def project do
@@ -124,6 +124,9 @@ defmodule ToonEx.MixProject do
         ],
         ImplHelpers: [
           ToonEx.ToonImplHelper
+        ],
+        Phoenix: [
+          ToonEx.Phoenix.Serializer
         ],
         "Shared Types": [
           ToonEx.Types,

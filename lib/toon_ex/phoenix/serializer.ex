@@ -4,6 +4,17 @@ defmodule ToonEx.Phoenix.Serializer do
   `encode/2`, `encode!/2`, `decode/2`, `decode!/2` and `encode_to_iodata!`.  The optional
   `opts` argument is accepted but intentionally ignored so that this
   module can be dropped in wherever a standard JSON library is expected.
+
+  Updates `endpoint.ex` to use this serializer.
+
+  ```elixir
+  socket "/socket", MyAppWeb.ChannelSocket,
+      websocket: [
+        connect_info: [:peer_data],
+        serializer: [{ToonEx.Phoenix.Serializer, "~> 2.0.0"}]
+      ],
+      longpoll: false
+  ```
   """
 
   @type encode_result :: {:ok, binary()} | {:error, term()}
