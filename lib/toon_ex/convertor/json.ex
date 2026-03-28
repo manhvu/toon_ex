@@ -30,8 +30,13 @@ defmodule ToonEx.JSON do
 
   @spec to_toon(binary()) :: binary()
   def to_toon!(json) when is_binary(json) do
-    term = JSON.decode!(json)
-    ToonEx.encode!(term)
+    try do
+      JSON.decode!(json)
+    rescue
+      e in JSON.DecodeError ->
+        raise RuntimeError, message: "Invalid JSON: #{Exception.message(e)}"
+    end
+    |> ToonEx.encode!()
   end
 
   @spec from_toon(binary()) :: {:ok, binary()} | {:error, term()}
@@ -48,7 +53,12 @@ defmodule ToonEx.JSON do
 
   @spec from_toon!(binary()) :: binary()
   def from_toon!(toon) when is_binary(toon) do
-    term = ToonEx.decode!(toon)
-    JSON.encode!(term)
+    case from_toon(toon) do
+      {:ok, result} ->
+        JSON.encode!(result)
+
+      {:error, error} ->
+        raise RuntimeError, message: "Invalid TOON: #{Exception.message(error)}"
+    end
   end
 end

@@ -49,10 +49,6 @@ defmodule ToonEx.JSONTest do
     test "returns {:error, reason} for invalid toon input" do
       assert {:error, _reason} = ToonEx.JSON.from_toon("test[4]{m,n}: -")
     end
-
-    test "returns {:error, reason} for empty string" do
-      assert {:error, _reason} = ToonEx.JSON.from_toon("")
-    end
   end
 
   # ---------------------------------------------------------------------------

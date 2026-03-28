@@ -1,7 +1,7 @@
 defmodule ToonEx.MixProject do
   use Mix.Project
 
-  @version "0.2.1"
+  @version "0.3.0"
   @source_url "https://github.com/manhvu/toon_ex"
 
   def project do
@@ -76,8 +76,8 @@ defmodule ToonEx.MixProject do
 
   defp description do
     """
-    TOON encoder and decoder for Elixir/Phoenix.
-    Forks from https://hex.pm/packages/toon.
+    TOON encoder/decoder, supported for Phoenix Channels.
+    Forked from https://hex.pm/packages/toon
     """
   end
 

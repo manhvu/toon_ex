@@ -157,17 +157,25 @@ defmodule ToonEx.Decode.StructuralParser do
 
       # Single line -> check if it's a primitive or key-value
       rest == [] ->
-        # Check if it looks like a key-value pair by pattern matching
-        # Match: <key>: <value> or <key>: (empty) where key can include array markers like [N]
-        # Pattern: (quoted_key|unquoted_key)(optional_array_marker): (space or end of line)
-        # Quoted keys can contain escaped quotes: "(?:[^"\\]|\\.)*"
-        # Unquoted keys can include: letters, numbers, _, -, .
-        if String.match?(content, ~r/^(?:"(?:[^"\\]|\\.)*"|[\w.-]+)(?:\[[^\]]*\])?:(?:\s|$)/) do
-          # It's a key-value pair -> object
-          {:object, nil}
-        else
-          # Not a valid key-value pair -> treat as root primitive
-          {:root_primitive, nil}
+        cond do
+          # Tabular array header key[N]{fields}: ... — must be detected before
+          # the generic key-value check because {fields} sits between [N] and ":"
+          # and breaks the simpler regex.
+          String.match?(content, ~r/^(?:"[^"]*"|[\w.]+)\[\d+[^\]]*\]\{[^}]+\}:/) ->
+            # Route to :object so parse_entry_line raises DecodeError on the
+            # missing / malformed data rows (4 declared, 0 present here).
+            {:object, nil}
+
+          # List array header key[N]: ... (inline value on header line is also invalid)
+          String.match?(content, ~r/^(?:"[^"]*"|[\w.]+)\[\d+[^\]]*\]:/) ->
+            {:object, nil}
+
+          # Normal key-value pair
+          String.match?(content, ~r/^(?:"(?:[^"\\]|\\.)*"|[\w.-]+)(?:\[[^\]]*\])?:(?:\s|$)/) ->
+            {:object, nil}
+
+          true ->
+            {:root_primitive, nil}
         end
 
       true ->
@@ -176,10 +184,22 @@ defmodule ToonEx.Decode.StructuralParser do
   end
 
   # Parse root primitive value (single value without key)
+
   defp parse_root_primitive([%{content: content}], _opts, metadata) do
-    # For root primitives, we parse directly without parser combinator
-    # This handles quoted strings with escapes correctly
+    unless valid_primitive?(content) do
+      raise DecodeError,
+        message: "Invalid TOON value: #{inspect(content)}",
+        input: content
+    end
+
     {parse_value(content), metadata}
+  end
+
+  defp valid_primitive?(content) do
+    content in ~w(null true false) or
+      String.starts_with?(content, "\"") or
+      String.match?(content, ~r/^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$/) or
+      not String.match?(content, ~r/[:,\n\r]/)
   end
 
   # Parse root-level array
@@ -405,17 +425,33 @@ defmodule ToonEx.Decode.StructuralParser do
         end
 
       {:ok, [parsed_result], rest_content, _, _, _} when rest_content != "" ->
-        # Parser didn't consume the entire line - re-parse the value manually
-        # This handles cases like "note: a,b" where the parser stops at the comma
         case parsed_result do
           {key, _partial_value} ->
             updated_meta = add_key_to_metadata(key, was_quoted, metadata)
 
-            # Re-extract the full value from the original content
             case String.split(content, ": ", parts: 2) do
-              [_, value_str] ->
-                full_value = parse_value(String.trim(value_str))
-                {:entry, key, full_value, rest, updated_meta}
+              [array_header, values_str] ->
+                # ← NEW: if the header contains [N], re-parse as array
+                case Regex.run(~r/\[(\d+)([^\]]*)\]$/, array_header) do
+                  [_, length_str, delimiter_marker] ->
+                    declared_length = String.to_integer(length_str)
+                    delimiter = extract_delimiter("[#{delimiter_marker}]")
+                    values = parse_delimited_values(values_str, delimiter)
+
+                    if length(values) != declared_length do
+                      raise DecodeError,
+                        message:
+                          "Array length mismatch: declared #{declared_length}, got #{length(values)}",
+                        input: content
+                    end
+
+                    {:entry, key, values, rest, updated_meta}
+
+                  nil ->
+                    # Not an array line — original scalar fallback
+                    full_value = parse_value(String.trim(values_str))
+                    {:entry, key, full_value, rest, updated_meta}
+                end
 
               _ ->
                 {:skip, rest, metadata}
@@ -834,45 +870,6 @@ defmodule ToonEx.Decode.StructuralParser do
       value ->
         # Primitive item
         {value, rest}
-    end
-  end
-
-  # Handle case when parser has remaining input
-  defp handle_partial_parse(
-         key,
-         partial_value,
-         remaining_input,
-         delimiter,
-         rest,
-         line,
-         expected_indent,
-         opts
-       ) do
-    # If delimiter is NOT comma but remaining starts with comma, the value has commas
-    if delimiter != "," and String.starts_with?(remaining_input, ",") do
-      # Re-parse: the full value is partial_value + remaining_input
-      full_value = parse_value(to_string(partial_value) <> remaining_input)
-
-      continuation_lines = take_item_lines(rest, expected_indent)
-
-      item_indent =
-        if length(continuation_lines) > 0 do
-          continuation_lines |> Enum.map(& &1.indent) |> Enum.min()
-        else
-          line.indent
-        end
-
-      adjusted_content = "#{key}: #{full_value}"
-      item_lines = [%{line | content: adjusted_content, indent: item_indent} | continuation_lines]
-      # List items don't need metadata tracking (not top-level)
-      empty_metadata = %{quoted_keys: MapSet.new(), key_order: []}
-      {object, _} = parse_object_lines(item_lines, item_indent, opts, empty_metadata)
-      remaining = Enum.drop(rest, length(continuation_lines))
-      {object, remaining}
-    else
-      raise DecodeError,
-        message: "Parse failed: unexpected remaining input '#{remaining_input}'",
-        reason: :parse_error
     end
   end
 

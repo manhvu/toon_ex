@@ -20,6 +20,15 @@ defmodule ToonEx.Decode.ArraysTest do
       assert {:ok, %{"ns" => [1, 2, 3]}} = ToonEx.decode("ns[3]: 1,2,3")
     end
 
+    test "simple array" do
+      assert {:ok,
+              %{
+                "game_owners" => [
+                  "019d3369-162f-7fa3-bf17-a13d09d5ca8b"
+                ]
+              }} = ToonEx.decode("game_owners[1]: 019d3369-162f-7fa3-bf17-a13d09d5ca8b")
+    end
+
     test "mixed-type array" do
       assert {:ok, %{"x" => [1, "hello", true, nil]}} =
                ToonEx.decode("x[4]: 1,hello,true,null")

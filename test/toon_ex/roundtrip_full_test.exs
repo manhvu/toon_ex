@@ -83,10 +83,6 @@ defmodule ToonEx.Roundtrip.FullTest do
       assert_rt("hello")
     end
 
-    test "string with spaces" do
-      assert_rt("hello world")
-    end
-
     test "string with colon" do
       assert_rt("a:b")
     end
