@@ -168,18 +168,22 @@ defmodule ToonEx.Decode.Parser do
   @doc false
   def parse_number(str) when is_binary(str) do
     cond do
-      # Exponent notation (e.g., 1e6, -1E+03, 2.5e-2)
       String.contains?(str, "e") or String.contains?(str, "E") ->
-        # Float.parse handles exponent notation
-        {float, ""} = Float.parse(str)
-        # If result is a whole number, return as integer
-        if float == trunc(float), do: trunc(float), else: float
+        # ← was: {float, ""} = Float.parse(str)
+        case Float.parse(str) do
+          {float, ""} ->
+            if float == trunc(float), do: trunc(float), else: float
 
-      # Decimal float (e.g., 1.5, -2.0)
+          _ ->
+            # Overflow or partial parse — return raw string.
+            # parse_entry_line's partial-match branch will re-parse the full
+            # value string correctly via parse_value/1.
+            str
+        end
+
       String.contains?(str, ".") ->
         String.to_float(str)
 
-      # Integer
       true ->
         String.to_integer(str)
     end

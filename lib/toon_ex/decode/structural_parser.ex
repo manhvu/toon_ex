@@ -294,6 +294,7 @@ defmodule ToonEx.Decode.StructuralParser do
   # Parse object from lines
   defp parse_object_lines(lines, base_indent, opts, metadata) do
     {entries, _remaining, updated_metadata} = parse_entries(lines, base_indent, opts, metadata)
+
     {build_map_with_keys(entries, opts), updated_metadata}
   end
 
@@ -389,32 +390,27 @@ defmodule ToonEx.Decode.StructuralParser do
               {:entry, key, corrected_value, rest, updated_meta}
             end
 
-          {key, value} when is_map(value) ->
-            updated_meta = add_key_to_metadata(key, was_quoted, metadata)
-            # Simple value, not nested
-            {:entry, key, value, rest, updated_meta}
-
           {key, value} ->
             updated_meta = add_key_to_metadata(key, was_quoted, metadata)
 
-            # Check if next lines are nested
             case peek_next_indent(rest) do
               indent when indent > base_indent ->
-                # Has nested content
                 {nested_value, nested_meta} =
                   parse_nested_value(key, rest, base_indent, opts, updated_meta)
 
                 {remaining_lines, _} = skip_nested_lines(rest, base_indent)
+
                 {:entry, key, nested_value, remaining_lines, nested_meta}
 
               _ ->
-                # Simple primitive value - re-parse the entire value to respect special cases
-                # This handles: leading zeros, commas in strings, etc.
+                # FIX 1: When the raw value string is empty (e.g. "key: "), preserve
+                # the Parser's result (%{} from empty_kv) instead of calling
+                # parse_value(""), which would incorrectly return "".
                 corrected_value =
                   case String.split(content, ": ", parts: 2) do
                     [_, value_str] ->
-                      # Re-parse the entire value string
-                      parse_value(String.trim(value_str))
+                      trimmed_str = String.trim(value_str)
+                      if trimmed_str == "", do: value, else: parse_value(trimmed_str)
 
                     _ ->
                       value
@@ -546,6 +542,7 @@ defmodule ToonEx.Decode.StructuralParser do
   # Parse nested value (object or array)
   defp parse_nested_value(_key, lines, base_indent, opts, metadata) do
     nested_lines = take_nested_lines(lines, base_indent)
+
     # Use the actual indent of the first nested line, not base_indent + indent_size
     # This allows non-multiple indentation when strict=false
     actual_indent = get_first_content_indent(nested_lines)
@@ -693,6 +690,7 @@ defmodule ToonEx.Decode.StructuralParser do
     list_lines = take_nested_lines(lines, base_indent)
     # Use the actual indent of the first list item, not base_indent + indent_size
     actual_indent = get_first_content_indent(list_lines)
+
     parse_list_items(list_lines, actual_indent, opts, [])
   end
 
@@ -747,10 +745,8 @@ defmodule ToonEx.Decode.StructuralParser do
   defp route_list_item("", rest, _line, _expected_indent, _opts), do: {%{}, rest}
 
   defp route_list_item(trimmed, rest, line, expected_indent, opts) do
-    trimmed_stripped = String.trim(trimmed)
-
     cond do
-      trimmed_stripped == "" ->
+      String.trim(trimmed) == "" ->
         {%{}, rest}
 
       inline_array_with_values?(trimmed) ->
@@ -770,26 +766,21 @@ defmodule ToonEx.Decode.StructuralParser do
     end
   end
 
-  # Normal list item parsing (extracted to helper)
-
-  # ── parse_list_item_normal/5  (call site — add trimmed to the call) ────────────
-
   defp parse_list_item_normal(trimmed, rest, line, expected_indent, opts) do
     delimiter = Map.get(opts, :delimiter, ",")
 
-    case Parser.parse_line(trimmed) do
+    result = Parser.parse_line(trimmed)
+
+    case result do
       {:ok, [result], "", _, _, _} ->
         handle_complete_parse(result, trimmed, rest, line, expected_indent, opts)
 
       {:ok, [{key, partial_value}], remaining_input, _, _, _}
       when is_binary(remaining_input) and remaining_input != "" ->
-        # Pass `trimmed` so handle_partial_parse can delegate back to
-        # handle_complete_parse with the full original content.
         handle_partial_parse(
           key,
           partial_value,
           remaining_input,
-          # <-- trimmed added here
           delimiter,
           trimmed,
           rest,
@@ -803,13 +794,10 @@ defmodule ToonEx.Decode.StructuralParser do
     end
   end
 
-  # ── handle_partial_parse/9  (was /8 — trimmed parameter added) ────────────────
-
   defp handle_partial_parse(
          key,
          partial_value,
          remaining_input,
-         # <-- new parameter
          delimiter,
          trimmed,
          rest,
@@ -818,8 +806,6 @@ defmodule ToonEx.Decode.StructuralParser do
          opts
        ) do
     if delimiter != "," and String.starts_with?(remaining_input, ",") do
-      # Original case: non-comma row delimiter, but the value itself contains a
-      # comma (e.g. tab-delimited array with a comma-containing string value).
       full_value = parse_value(to_string(partial_value) <> remaining_input)
 
       continuation_lines = take_item_lines(rest, expected_indent)
@@ -836,42 +822,67 @@ defmodule ToonEx.Decode.StructuralParser do
       remaining = Enum.drop(rest, length(continuation_lines))
       {object, remaining}
     else
-      # General case: the parser consumed only part of the value
-      # (e.g. "500000" from "500000 USD", stopping at the space).
-      # Delegate to handle_complete_parse, which prepends a line with content
-      # = `trimmed` and calls parse_object_lines.  parse_entry_line's
-      # `rest_content != ""` branch then re-extracts the full value string by
-      # splitting on ": " — correctly returning "500000 USD" as a string.
       handle_complete_parse({key, partial_value}, trimmed, rest, line, expected_indent, opts)
     end
   end
 
-  # Handle case when parser fully consumed input
+  # handle_complete_parse/6
+  #
+  # Builds a map object from a parsed list-item result plus its continuation lines.
+  #
+  # Design: use line.indent as the base for parse_object_lines so that standard
+  # TOON indentation-based nesting works correctly inside list items.
+  #
+  #   - args:           ← line.indent = 2
+  #     device_id: val  ← continuation at indent 4
+  #
+  # With base = line.indent = 2: peek_next_indent = 4 > 2 → nesting triggered
+  # → %{"args" => %{"device_id" => val}} ✓
+  #
+  # For non-empty valued first fields (e.g. "budget: 500 USD"), the
+  # continuation lines are siblings.  We normalise all of them (including the
+  # first line) to cont_indent so they share one base level and none triggers
+  # spurious nesting via peek_next_indent.
   defp handle_complete_parse(result, trimmed, rest, line, expected_indent, opts) do
     case result do
-      {_key, _value} ->
-        # Object item - collect all fields including continuation lines
+      {_key, value} ->
         continuation_lines = take_item_lines(rest, expected_indent)
 
-        item_indent =
-          if length(continuation_lines) > 0 do
-            continuation_lines |> Enum.map(& &1.indent) |> Enum.min()
+        {item_lines, item_indent} =
+          if empty_list_item_value?(value) and continuation_lines != [] do
+            # Empty-valued first field (e.g. "args: ") — keep line.indent so
+            # that continuation lines at a deeper indent are correctly treated
+            # as children by parse_entry_line's peek_next_indent check.
+            {[%{line | content: trimmed} | continuation_lines], line.indent}
           else
-            line.indent
+            # Valued first field — all fields are siblings.  Normalise to
+            # cont_indent so they share a base level.
+            cont_indent =
+              if continuation_lines == [],
+                do: line.indent,
+                else: continuation_lines |> Enum.map(& &1.indent) |> Enum.min()
+
+            {[%{line | content: trimmed, indent: cont_indent} | continuation_lines], cont_indent}
           end
 
-        item_lines = [%{line | content: trimmed, indent: item_indent} | continuation_lines]
-        # List items don't need metadata tracking (not top-level)
         empty_metadata = %{quoted_keys: MapSet.new(), key_order: []}
         {object, _} = parse_object_lines(item_lines, item_indent, opts, empty_metadata)
         remaining = Enum.drop(rest, length(continuation_lines))
         {object, remaining}
 
       value ->
-        # Primitive item
         {value, rest}
     end
   end
+
+  # A list-item value is "empty" when the parser produced a placeholder that
+  # carries no real data — %{} from empty_kv, "" from a trailing-space value,
+  # or nil from a null literal.  These are the cases where indented lines below
+  # must be nested as children of the key rather than treated as siblings.
+  defp empty_list_item_value?(%{} = m) when map_size(m) == 0, do: true
+  defp empty_list_item_value?(""), do: true
+  defp empty_list_item_value?(nil), do: true
+  defp empty_list_item_value?(_), do: false
 
   # Handle case when parser failed
   defp handle_parse_error(trimmed, rest, expected_indent, opts) do

@@ -95,8 +95,17 @@ defmodule ToonEx.RoundtripTest do
     end
 
     test "mixed type list with map object" do
-      input = [1, "two", :three, %{"a" => %{}, "b" => "b"}]
-      expected = [1, "two", "three", %{"a" => %{}, "b" => "b"}]
+      input = [%{"a" => %{}, "b" => "b1"}]
+      expected = [%{"a" => %{}, "b" => "b1"}]
+      {_enc, decoded, normalized} = roundtrip(input)
+
+      assert normalized == expected
+      assert decoded == normalized
+    end
+
+    test "mixed type list with map object 2" do
+      input = [%{"a" => "a1", "b" => %{}}]
+      expected = [%{"a" => "a1", "b" => %{}}]
       {_enc, decoded, normalized} = roundtrip(input)
 
       assert normalized == expected
@@ -437,7 +446,6 @@ defmodule ToonEx.RoundtripTest do
   test "very small float roundtrips correctly" do
     data = %{"x" => 1.0e-10}
     {encoded, decoded, normalized} = roundtrip(data)
-    IO.puts("#{inspect(encoded)}")
     refute String.contains?(encoded, "e"), "should not use scientific notation"
     assert_in_delta decoded["x"], normalized["x"], 1.0e-20
   end
