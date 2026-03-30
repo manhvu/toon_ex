@@ -843,6 +843,7 @@ defmodule ToonEx.Decode.StructuralParser do
   # continuation lines are siblings.  We normalise all of them (including the
   # first line) to cont_indent so they share one base level and none triggers
   # spurious nesting via peek_next_indent.
+
   defp handle_complete_parse(result, trimmed, rest, line, expected_indent, opts) do
     case result do
       {_key, value} ->
@@ -850,13 +851,25 @@ defmodule ToonEx.Decode.StructuralParser do
 
         {item_lines, item_indent} =
           if empty_list_item_value?(value) and continuation_lines != [] do
-            # Empty-valued first field (e.g. "args: ") — keep line.indent so
-            # that continuation lines at a deeper indent are correctly treated
-            # as children by parse_entry_line's peek_next_indent check.
-            {[%{line | content: trimmed} | continuation_lines], line.indent}
+            cont_indent = continuation_lines |> Enum.map(& &1.indent) |> Enum.min()
+            # Length of the list marker that was stripped from line.content
+            # ("- " → 2, "-" → 1).  trimmed = remove_list_marker(line.content).
+            marker_len = byte_size(line.content) - byte_size(trimmed)
+            sibling_indent = line.indent + marker_len
+
+            if cont_indent > sibling_indent do
+              # Continuation lines are CHILDREN of this key (deeper than sibling
+              # level).  Preserve line.indent so peek_next_indent detects nesting.
+              {[%{line | content: trimmed} | continuation_lines], line.indent}
+            else
+              # Continuation lines are SIBLINGS (same logical indent as this key).
+              # Normalise first-line indent to cont_indent so all fields share
+              # the same base level in parse_object_lines.
+              {[%{line | content: trimmed, indent: cont_indent} | continuation_lines],
+               cont_indent}
+            end
           else
-            # Valued first field — all fields are siblings.  Normalise to
-            # cont_indent so they share a base level.
+            # Normal (non-empty) value: all continuation lines are siblings.
             cont_indent =
               if continuation_lines == [],
                 do: line.indent,
@@ -875,30 +888,25 @@ defmodule ToonEx.Decode.StructuralParser do
     end
   end
 
-  # A list-item value is "empty" when the parser produced a placeholder that
-  # carries no real data — %{} from empty_kv, "" from a trailing-space value,
-  # or nil from a null literal.  These are the cases where indented lines below
-  # must be nested as children of the key rather than treated as siblings.
+  # Only %{} (the empty_kv placeholder) represents "no value supplied".
+  # nil (null literal) and "" (explicit quoted empty string) are real values
+  # and must NOT trigger the children/sibling disambiguation path.
   defp empty_list_item_value?(%{} = m) when map_size(m) == 0, do: true
-  defp empty_list_item_value?(""), do: true
-  defp empty_list_item_value?(nil), do: true
   defp empty_list_item_value?(_), do: false
 
-  # Handle case when parser failed
   defp handle_parse_error(trimmed, rest, expected_indent, opts) do
-    # Check if this is a key-only line (e.g., "data:") with nested content
     if String.ends_with?(trimmed, ":") and not String.contains?(trimmed, " ") do
       next_indent = peek_next_indent(rest)
 
       if next_indent > expected_indent do
         parse_nested_key_with_content(trimmed, rest, next_indent, expected_indent, opts)
       else
-        # No nested content, treat as primitive value
         {parse_value(trimmed), rest}
       end
     else
-      # Primitive value without key - parse as standalone value
-      {parse_value(trimmed), rest}
+      # Strip trailing delimiter comma — it is separator noise, not value data.
+      value_str = String.trim_trailing(trimmed, ",")
+      {parse_value(value_str), rest}
     end
   end
 

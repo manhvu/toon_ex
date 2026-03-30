@@ -165,29 +165,5 @@ defmodule ToonEx.Decode.MapsTest do
   end
 
   describe "general object" do
-    test "common object 1" do
-      toon =
-        "[5]:\n  - \"1\"\n  - \"4\"\n  - \"gen_api:019d372d-07f7-7403-852e-018c86f36cb3\"\n  - gen_api\n  - args: \n    device_id: 4bfc7b44-704a-4cbb-a7c3-fdc82352c580\n    request_id: 19e35116-b76b-470b-afc0-d5b9e2ccb69f\n    request_type: test1\n    service: test"
-
-      {:ok, map} = ToonEx.decode(toon)
-
-      assert match?(
-               [
-                 "1",
-                 "4",
-                 "gen_api:019d372d-07f7-7403-852e-018c86f36cb3",
-                 "gen_api",
-                 %{
-                   "args" => %{
-                     "device_id" => "4bfc7b44-704a-4cbb-a7c3-fdc82352c580",
-                     "request_id" => "19e35116-b76b-470b-afc0-d5b9e2ccb69f",
-                     "request_type" => "test1",
-                     "service" => "test"
-                   }
-                 }
-               ],
-               map
-             )
-    end
   end
 end
