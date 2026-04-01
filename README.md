@@ -6,9 +6,9 @@
 
 **TOON (Token-Oriented Object Notation)** encoder and decoder for Elixir and Phoenix.
 
-TOON is a compact data format optimized for LLM token efficiency, achieving **30-60% token reduction** compared to JSON while maintaining readability.
+TOON is a compact data format optimized for LLM token efficiency.
 
-TOON is suit for LLM, I try to apply to replace JSON in Phoenix.
+The library is supported for Phoenix Channels. Guide in `ToonEx.Phoenix.Serializer` module.
 
 ## Features
 
@@ -28,7 +28,7 @@ Add `toon_ex` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:toon_ex, "~> 0.1.0"}
+    {:toon_ex, "~> 0.3.4"}
   ]
 end
 ```
@@ -164,10 +164,6 @@ ToonEx.decode!("  name: Alice", strict: false)  # Accepts non-standard indentati
 ## Specification Compliance
 
 This implementation is tested against the [official TOON specification v1.3](https://github.com/toon-format/spec).
-
-### Testing Approach
-
-Tests use **semantic equivalence** checking: both encoder output and expected output are decoded and compared. This ensures correctness while accommodating Elixir 1.19's automatic map key sorting (outputs may differ in key order but decode to identical data structures).
 
 ## Limitation
 

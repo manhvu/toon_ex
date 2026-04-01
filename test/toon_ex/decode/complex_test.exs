@@ -4,6 +4,35 @@ defmodule ToonEx.Decode.ComplexObjectTest do
   # ── inline arrays (key[N]: v1,v2) ───────────────────────────────────────────
 
   describe "Phoenix Array" do
+    test "encodes mixed objects" do
+      expected_data =
+        [
+          %{
+            "data" => [
+              %{
+                "index" => 0,
+                "timestamp" => 259
+              },
+              %{
+                "id" => "abc",
+                "timestamp" => 1257
+              }
+            ]
+          }
+        ]
+
+      toon = """
+      [1]:
+        - data[2]:
+          - index: 0
+            timestamp: 259
+          - id: abc
+            timestamp: 1257
+      """
+
+      assert expected_data == ToonEx.decode!(toon)
+    end
+
     test "Complex array 1" do
       string = """
       [5]:

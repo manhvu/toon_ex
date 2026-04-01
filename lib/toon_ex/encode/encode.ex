@@ -276,18 +276,18 @@ defmodule ToonEx.Encode do
 
     items =
       Enum.flat_map(data, fn item ->
-        result = encode_root_list_item(item, depth, opts)
-        result
+        encode_root_list_item(item, depth, opts)
       end)
 
-    # Don't add extra indentation - items already have their indentation
-    [
-      IO.iodata_to_binary(header)
-      | Enum.map(items, fn line ->
-          [opts.indent_string, line]
-        end)
-    ]
-    |> Enum.map_join("\n", &IO.iodata_to_binary/1)
+    result =
+      [
+        IO.iodata_to_binary(header)
+        | Enum.map(items, fn line -> [opts.indent_string, line] end)
+      ]
+      |> Enum.map_join("\n", &IO.iodata_to_binary/1)
+
+    # <── trailing newline to match TOON document convention
+    result <> "\n"
   end
 
   # Encode a single root list item
@@ -440,7 +440,8 @@ defmodule ToonEx.Encode do
                   do: [Constants.list_item_marker(), Constants.space(), header],
                   else: [opts.indent_string, header]
 
-              indented_data = Enum.map(data_lines, &[opts.indent_string, opts.indent_string, &1])
+              # ONE opts.indent_string, not two
+              indented_data = Enum.map(data_lines, &[opts.indent_string, &1])
               [marked_header | indented_data]
 
             true ->

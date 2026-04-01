@@ -247,6 +247,35 @@ defmodule ToonEx.EncodeTest do
       assert String.contains?(result, "- ")
     end
 
+    test "encodes mixed objects" do
+      data =
+        [
+          %{
+            data: [
+              %{
+                "index" => 0,
+                "timestamp" => 259
+              },
+              %{
+                "id" => "abc",
+                "timestamp" => 1257
+              }
+            ]
+          }
+        ]
+
+      expected_toon = """
+      [1]:
+        - data[2]:
+          - index: 0
+            timestamp: 259
+          - id: abc
+            timestamp: 1257
+      """
+
+      assert expected_toon == ToonEx.encode!(data)
+    end
+
     test "object array with nested values uses list format" do
       data = [%{"id" => 1, "meta" => %{"x" => 1}}, %{"id" => 2, "meta" => %{"x" => 2}}]
       {:ok, result} = ToonEx.encode(%{"items" => data})
