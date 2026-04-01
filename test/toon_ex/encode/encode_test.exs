@@ -276,6 +276,34 @@ defmodule ToonEx.EncodeTest do
       assert expected_toon == ToonEx.encode!(data)
     end
 
+    test "encodes mixed object 2" do
+      data = [
+        "info",
+        %{
+          "id" => "908d993a-5c16-4bdf-b94d-76e559809eb5",
+          "name" => "Test",
+          "list" => [
+            "019d3c0e-0833-72c4-b53e-04d6b79f3ff3"
+          ],
+          "status" => %{
+            "time" => "2026-04-01T13:33:14.956244Z"
+          }
+        }
+      ]
+
+      expected_toon = """
+      [2]:
+        - info
+        - id: 908d993a-5c16-4bdf-b94d-76e559809eb5
+          name: Test
+          list[1]: 019d3c0e-0833-72c4-b53e-04d6b79f3ff3
+          status:
+            time: "2026-04-01T13:33:14.956244Z"
+      """
+
+      assert expected_toon == ToonEx.encode!(data)
+    end
+
     test "object array with nested values uses list format" do
       data = [%{"id" => 1, "meta" => %{"x" => 1}}, %{"id" => 2, "meta" => %{"x" => 2}}]
       {:ok, result} = ToonEx.encode(%{"items" => data})

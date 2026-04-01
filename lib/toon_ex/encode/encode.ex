@@ -298,6 +298,17 @@ defmodule ToonEx.Encode do
   defp encode_root_list_item(item, depth, opts) when is_map(item) do
     entries =
       item
+      |> Enum.sort_by(fn {k, v} ->
+        type_priority =
+          cond do
+            Utils.primitive?(v) -> 0
+            is_list(v) -> 1
+            is_map(v) -> 2
+            true -> 3
+          end
+
+        {type_priority, k}
+      end)
       |> Enum.with_index()
       |> Enum.flat_map(fn {{k, v}, index} ->
         encode_root_list_entry(k, v, index, depth, opts)
@@ -433,14 +444,14 @@ defmodule ToonEx.Encode do
               [header | nested_lines]
 
             is_list(v) ->
-              [header | data_lines] = Arrays.encode_list(k, v, depth + 1, opts)
+              # ← encode, not encode_list
+              [header | data_lines] = Arrays.encode(k, v, depth + 1, opts)
 
               marked_header =
                 if needs_marker,
                   do: [Constants.list_item_marker(), Constants.space(), header],
                   else: [opts.indent_string, header]
 
-              # ONE opts.indent_string, not two
               indented_data = Enum.map(data_lines, &[opts.indent_string, &1])
               [marked_header | indented_data]
 

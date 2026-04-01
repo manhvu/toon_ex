@@ -4,7 +4,7 @@ defmodule ToonEx.Decode.ComplexObjectTest do
   # ── inline arrays (key[N]: v1,v2) ───────────────────────────────────────────
 
   describe "Phoenix Array" do
-    test "encodes mixed objects" do
+    test "decodes mixed objects" do
       expected_data =
         [
           %{
@@ -28,6 +28,34 @@ defmodule ToonEx.Decode.ComplexObjectTest do
             timestamp: 259
           - id: abc
             timestamp: 1257
+      """
+
+      assert expected_data == ToonEx.decode!(toon)
+    end
+
+    test "decodes mixed object2" do
+      expected_data = [
+        "info",
+        %{
+          "id" => "908d993a-5c16-4bdf-b94d-76e559809eb5",
+          "name" => "Test",
+          "list" => [
+            "019d3c0e-0833-72c4-b53e-04d6b79f3ff3"
+          ],
+          "status" => %{
+            "time" => "2026-04-01T13:33:14.956244Z"
+          }
+        }
+      ]
+
+      toon = """
+      [2]:
+        - info
+        - id: 908d993a-5c16-4bdf-b94d-76e559809eb5
+          name: Test
+          list[1]: 019d3c0e-0833-72c4-b53e-04d6b79f3ff3
+          status:
+            time: "2026-04-01T13:33:14.956244Z"
       """
 
       assert expected_data == ToonEx.decode!(toon)
