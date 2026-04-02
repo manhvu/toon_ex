@@ -267,10 +267,10 @@ defmodule ToonEx.EncodeTest do
       expected_toon = """
       [1]:
         - data[2]:
-          - index: 0
-            timestamp: 259
-          - id: abc
-            timestamp: 1257
+            - index: 0
+              timestamp: 259
+            - id: abc
+              timestamp: 1257
       """
 
       assert expected_toon == ToonEx.encode!(data)
@@ -332,7 +332,7 @@ defmodule ToonEx.EncodeTest do
 
       expected_toon = """
       [2]:
-        - "test"
+        - test
         - async: false
           success: true
           result[3]{name,user_id,username}:

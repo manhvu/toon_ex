@@ -1,7 +1,7 @@
 defmodule ToonEx.MixProject do
   use Mix.Project
 
-  @version "0.3.5"
+  @version "0.4.0"
   @source_url "https://github.com/manhvu/toon_ex"
 
   def project do

@@ -452,7 +452,10 @@ defmodule ToonEx.Encode do
                   do: [Constants.list_item_marker(), Constants.space(), header],
                   else: [opts.indent_string, header]
 
-              indented_data = Enum.map(data_lines, &[opts.indent_string, &1])
+              # Both tabular and list arrays need 2 indents when nested inside a list item's map entry
+              indented_data =
+                Enum.map(data_lines, &[opts.indent_string, opts.indent_string, &1])
+
               [marked_header | indented_data]
 
             true ->
