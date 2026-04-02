@@ -130,8 +130,8 @@ defmodule ToonEx.Encode.Arrays do
           []
       end
 
-    # Field names in {…} are ALWAYS comma-separated regardless of row delimiter.
-    fields = keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(",")
+    # Field names in {…} use the active delimiter per TOON spec Section 6.
+    fields = keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(opts.delimiter)
     delimiter_marker = format_delimiter_marker(opts.delimiter)
 
     header = [

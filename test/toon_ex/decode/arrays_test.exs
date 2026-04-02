@@ -109,15 +109,15 @@ defmodule ToonEx.Decode.ArraysTest do
     end
 
     test "tabular with tab delimiter" do
-      # Fields in {a,b} are always comma-separated; tab is the row delimiter.
-      toon = "rows[1\t]{a,b}:\n  1\t2"
+      # Fields in {a\tb} use the active delimiter (tab) per TOON spec Section 6.
+      toon = "rows[1\t]{a\tb}:\n  1\t2"
       {:ok, result} = ToonEx.decode(toon)
       assert result["rows"] == [%{"a" => 1, "b" => 2}]
     end
 
     test "tabular with pipe delimiter" do
-      # Fields in {a,b} are always comma-separated; pipe is the row delimiter.
-      toon = "rows[1|]{a,b}:\n  x|y"
+      # Fields in {a|b} use the active delimiter (pipe) per TOON spec Section 6.
+      toon = "rows[1|]{a|b}:\n  x|y"
       {:ok, result} = ToonEx.decode(toon)
       assert result["rows"] == [%{"a" => "x", "b" => "y"}]
     end

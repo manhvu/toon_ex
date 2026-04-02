@@ -240,8 +240,8 @@ defmodule ToonEx.Encode do
           []
       end
 
-    # Field names in {…} are ALWAYS comma-separated regardless of row delimiter.
-    fields = keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(",")
+    # Field names in {…} use the active delimiter per TOON spec Section 6.
+    fields = keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(opts.delimiter)
 
     header = [
       "[",
@@ -266,28 +266,26 @@ defmodule ToonEx.Encode do
         [opts.indent_string, values]
       end)
 
-    [header | rows]
-    |> Enum.map_join("\n", &IO.iodata_to_binary/1)
+    # Return iodata list for consistency with other encode paths per TOON spec
+    # Return binary with newlines between header and rows, no trailing newline per TOON spec Section 12
+    [IO.iodata_to_binary(header) | Enum.map(rows, &IO.iodata_to_binary/1)]
+    |> Enum.join("\n")
   end
 
-  # Encode root list array
-  defp encode_root_list_array(data, length_marker, delimiter_marker, depth, opts) do
+  # Encode root list array - returns binary with newlines between items, no trailing newline per TOON spec Section 12
+  defp encode_root_list_array(data, length_marker, delimiter_marker, _depth, opts) do
     header = ["[", length_marker, delimiter_marker, "]:"]
 
     items =
       Enum.flat_map(data, fn item ->
-        encode_root_list_item(item, depth, opts)
+        encode_root_list_item(item, 0, opts)
       end)
 
-    result =
-      [
-        IO.iodata_to_binary(header)
-        | Enum.map(items, fn line -> [opts.indent_string, line] end)
-      ]
-      |> Enum.map_join("\n", &IO.iodata_to_binary/1)
-
-    # <── trailing newline to match TOON document convention
-    result <> "\n"
+    [
+      IO.iodata_to_binary(header)
+      | Enum.map(items, fn line -> IO.iodata_to_binary([opts.indent_string, line]) end)
+    ]
+    |> Enum.join("\n")
   end
 
   # Encode a single root list item

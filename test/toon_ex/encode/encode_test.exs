@@ -273,7 +273,8 @@ defmodule ToonEx.EncodeTest do
               timestamp: 1257
       """
 
-      assert expected_toon == ToonEx.encode!(data)
+      # TOON spec Section 12: no trailing newline at end of document
+      assert String.trim_trailing(expected_toon) == ToonEx.encode!(data)
     end
 
     test "encodes mixed object 2" do
@@ -301,7 +302,8 @@ defmodule ToonEx.EncodeTest do
             time: "2026-04-01T13:33:14.956244Z"
       """
 
-      assert expected_toon == ToonEx.encode!(data)
+      # TOON spec Section 12: no trailing newline at end of document
+      assert String.trim_trailing(expected_toon) == ToonEx.encode!(data)
     end
 
     test "encodes mixed object 3" do
@@ -341,7 +343,8 @@ defmodule ToonEx.EncodeTest do
             Mrs. Saige Cassin V,019d3c0e-092e-794b-b233-10c9557bf2a9,user_44
       """
 
-      assert expected_toon == ToonEx.encode!(data)
+      # TOON spec Section 12: no trailing newline at end of document
+      assert String.trim_trailing(expected_toon) == ToonEx.encode!(data)
     end
 
     test "object array with nested values uses list format" do

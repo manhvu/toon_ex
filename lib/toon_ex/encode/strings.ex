@@ -183,10 +183,8 @@ defmodule ToonEx.Encode.Strings do
   end
 
   defp looks_like_number?(string) do
-    case Float.parse(string) do
-      {_, ""} -> true
-      _ -> false
-    end
+    # Per TOON spec Section 7.2: matches /^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i
+    Regex.match?(~r/^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i, string)
   end
 
   defp contains_structure_chars?(string) do

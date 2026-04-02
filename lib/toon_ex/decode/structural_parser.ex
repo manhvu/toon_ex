@@ -244,7 +244,7 @@ defmodule ToonEx.Decode.StructuralParser do
   end
 
   # Parse root inline array from header line
-  defp parse_root_inline_array(header, _opts) do
+  defp parse_root_inline_array(header, opts) do
     # Extract everything after ": "
     case String.split(header, ": ", parts: 2) do
       [array_marker, values_str] ->
@@ -258,8 +258,8 @@ defmodule ToonEx.Decode.StructuralParser do
         delimiter = extract_delimiter(array_marker)
         values = parse_delimited_values(values_str, delimiter)
 
-        # Validate length if declared
-        if declared_length != nil and length(values) != declared_length do
+        # Validate length if declared (strict mode only per TOON spec Section 14.1)
+        if Map.get(opts, :strict, true) && declared_length && length(values) != declared_length do
           raise DecodeError,
             message: "Array length mismatch: declared #{declared_length}, got #{length(values)}",
             input: header
@@ -369,8 +369,8 @@ defmodule ToonEx.Decode.StructuralParser do
                       [_, values_str] ->
                         values = parse_delimited_values(values_str, delimiter)
 
-                        # Validate length
-                        if length(values) != declared_length do
+                        # Validate length (strict mode only per TOON spec Section 14.1)
+                        if Map.get(opts, :strict, true) && length(values) != declared_length do
                           raise DecodeError,
                             message:
                               "Array length mismatch: declared #{declared_length}, got #{length(values)}",
@@ -434,7 +434,8 @@ defmodule ToonEx.Decode.StructuralParser do
                     delimiter = extract_delimiter("[#{delimiter_marker}]")
                     values = parse_delimited_values(values_str, delimiter)
 
-                    if length(values) != declared_length do
+                    # Validate length (strict mode only per TOON spec Section 14.1)
+                    if Map.get(opts, :strict, true) && length(values) != declared_length do
                       raise DecodeError,
                         message:
                           "Array length mismatch: declared #{declared_length}, got #{length(values)}",
@@ -672,7 +673,8 @@ defmodule ToonEx.Decode.StructuralParser do
         items = parse_list_array_items(rest, base_indent, opts_with_delimiter)
 
         # Validate length
-        if length(items) != declared_length do
+        # Validate item count (strict mode only per TOON spec Section 14.1)
+        if Map.get(opts, :strict, true) && length(items) != declared_length do
           raise DecodeError,
             message: "Array length mismatch: declared #{declared_length}, got #{length(items)}",
             input: header
@@ -1169,9 +1171,9 @@ defmodule ToonEx.Decode.StructuralParser do
     parse_inline_array_from_line(trimmed, rest)
   end
 
-  # Parse fields from tabular header
-  defp parse_fields(fields_str, _row_delimiter) do
-    split_respecting_quotes(fields_str, ",")
+  # Parse fields from tabular header - use active delimiter per TOON spec Section 6
+  defp parse_fields(fields_str, delimiter) do
+    split_respecting_quotes(fields_str, delimiter)
     |> Enum.map(&String.trim/1)
     |> Enum.map(&unquote_key/1)
   end

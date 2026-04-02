@@ -184,7 +184,7 @@ defmodule ToonEx.Utils do
       42
 
       iex> ToonEx.Utils.normalize(-0.0)
-      -0.0
+      0
 
       iex> ToonEx.Utils.normalize(:infinity)
       nil
