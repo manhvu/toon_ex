@@ -1,4 +1,7 @@
-data = %{
+# Large size decode benchmark
+# Tests decoding performance for large objects (~5KB) with tabular arrays
+
+data_large = %{
   "users" =>
     Enum.map(1..100, fn i ->
       %{
@@ -18,19 +21,20 @@ data = %{
     end)
 }
 
-toon_large = ToonEx.encode!(data)
-
-json_large =
-  JSON.encode!(data)
+toon_large = ToonEx.encode!(data_large)
+json_large = JSON.encode!(data_large)
 
 Benchee.run(
   %{
-    "ToonEx.decode! (large)" => fn -> ToonEx.decode!(toon_large) end,
-    "JSON.decode! (large)" => fn -> JSON.decode!(json_large) end
+    "ToonEx.decode!" => fn -> ToonEx.decode!(toon_large) end,
+    "JSON.decode!" => fn -> JSON.decode!(json_large) end
   },
-  time: 10,
+  time: 5,
   memory_time: 2,
   formatters: [
-    Benchee.Formatters.Console
+    {Benchee.Formatters.Console, comparisons: true}
+  ],
+  print: [
+    fast_warning: false
   ]
 )

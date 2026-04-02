@@ -7,6 +7,10 @@ defmodule ToonEx.Encode.Strings do
 
   alias ToonEx.Constants
 
+  # Pre-compiled regex patterns for performance
+  @key_pattern ~r/^[A-Z_][\w.]*$/i
+  @number_pattern ~r/^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i
+
   @doc """
   Encodes a string value, adding quotes if necessary.
 
@@ -144,7 +148,7 @@ defmodule ToonEx.Encode.Strings do
   """
   @spec safe_key?(String.t()) :: boolean()
   def safe_key?(key) when is_binary(key) do
-    Regex.match?(~r/^[A-Z_][\w.]*$/i, key)
+    Regex.match?(@key_pattern, key)
   end
 
   @doc """
@@ -164,13 +168,35 @@ defmodule ToonEx.Encode.Strings do
   """
   @spec escape_string(String.t()) :: String.t()
   def escape_string(string) when is_binary(string) do
-    string
-    |> String.replace("\\", "\\\\")
-    |> String.replace("\"", "\\\"")
-    |> String.replace("\n", "\\n")
-    |> String.replace("\r", "\\r")
-    |> String.replace("\t", "\\t")
+    do_escape_string(string, [])
   end
+
+  # Single-pass binary pattern matching for escaping - avoids 5x String.replace overhead
+  @compile {:inline, do_escape_string: 2}
+  defp do_escape_string(<<>>, acc), do: acc |> :lists.reverse() |> IO.iodata_to_binary()
+
+  defp do_escape_string(<<?\\, rest::binary>>, acc),
+    do: do_escape_string(rest, ["\\\\" | acc])
+
+  defp do_escape_string(<<?", rest::binary>>, acc),
+    do: do_escape_string(rest, ["\\\"" | acc])
+
+  defp do_escape_string(<<?\n, rest::binary>>, acc),
+    do: do_escape_string(rest, ["\\n" | acc])
+
+  defp do_escape_string(<<?\r, rest::binary>>, acc),
+    do: do_escape_string(rest, ["\\r" | acc])
+
+  defp do_escape_string(<<?\t, rest::binary>>, acc),
+    do: do_escape_string(rest, ["\\t" | acc])
+
+  # Fast-path for ASCII bytes that don't need escaping
+  defp do_escape_string(<<byte, rest::binary>>, acc) when byte < 128,
+    do: do_escape_string(rest, [<<byte>> | acc])
+
+  # Multi-byte UTF-8 characters - copy as-is (they never need escaping per TOON spec)
+  defp do_escape_string(<<byte::utf8, rest::binary>>, acc),
+    do: do_escape_string(rest, [<<byte::utf8>> | acc])
 
   # Private helpers
 
@@ -178,26 +204,74 @@ defmodule ToonEx.Encode.Strings do
     String.starts_with?(string, " ") or String.ends_with?(string, " ")
   end
 
-  defp literal?(string) do
-    string in [Constants.true_literal(), Constants.false_literal(), Constants.null_literal()]
-  end
+  # Performance: Binary pattern matching instead of list membership check
+  @compile {:inline, literal?: 1}
+  defp literal?("true"), do: true
+  defp literal?("false"), do: true
+  defp literal?("null"), do: true
+  defp literal?(_), do: false
 
   defp looks_like_number?(string) do
     # Per TOON spec Section 7.2: matches /^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i
-    Regex.match?(~r/^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i, string)
+    # Uses pre-compiled pattern for performance
+    Regex.match?(@number_pattern, string)
   end
 
+  # Single-pass binary scan for structure characters - avoids multiple String.contains? calls
   defp contains_structure_chars?(string) do
-    Enum.any?(Constants.structure_chars(), &String.contains?(string, &1))
+    do_contains_structure_chars?(string)
   end
 
-  defp contains_delimiter?(string, delimiter) do
-    String.contains?(string, delimiter)
+  @compile {:inline, do_contains_structure_chars?: 1}
+  defp do_contains_structure_chars?(<<>>), do: false
+  defp do_contains_structure_chars?(<<?:, _rest::binary>>), do: true
+  defp do_contains_structure_chars?(<<?[, _rest::binary>>), do: true
+  defp do_contains_structure_chars?(<<?], _rest::binary>>), do: true
+  defp do_contains_structure_chars?(<<?{, _rest::binary>>), do: true
+  defp do_contains_structure_chars?(<<?}, _rest::binary>>), do: true
+  defp do_contains_structure_chars?(<<?(, _rest::binary>>), do: true
+  defp do_contains_structure_chars?(<<?), _rest::binary>>), do: true
+  defp do_contains_structure_chars?(<<?", _rest::binary>>), do: true
+  defp do_contains_structure_chars?(<<?\\, _rest::binary>>), do: true
+  # Skip ASCII bytes that aren't structure chars
+  defp do_contains_structure_chars?(<<byte, rest::binary>>) when byte < 128,
+    do: do_contains_structure_chars?(rest)
+
+  # Skip multi-byte UTF-8 characters
+  defp do_contains_structure_chars?(<<_byte::utf8, rest::binary>>),
+    do: do_contains_structure_chars?(rest)
+
+  # Performance: Single-pass binary scan instead of String.contains?
+  @compile {:inline, contains_delimiter?: 2}
+  defp contains_delimiter?(string, <<delimiter>>) do
+    do_contains_delimiter?(string, delimiter)
   end
 
+  defp do_contains_delimiter?(<<>>, _delimiter), do: false
+  defp do_contains_delimiter?(<<delimiter, _rest::binary>>, delimiter), do: true
+
+  defp do_contains_delimiter?(<<_byte, rest::binary>>, delimiter),
+    do: do_contains_delimiter?(rest, delimiter)
+
+  # Single-pass binary scan for control characters - avoids multiple String.contains? calls
   defp contains_control_chars?(string) do
-    Enum.any?(Constants.control_chars(), &String.contains?(string, &1))
+    do_contains_control_chars?(string)
   end
+
+  @compile {:inline, do_contains_control_chars?: 1}
+  defp do_contains_control_chars?(<<>>), do: false
+  defp do_contains_control_chars?(<<?\n, _rest::binary>>), do: true
+  defp do_contains_control_chars?(<<?\r, _rest::binary>>), do: true
+  defp do_contains_control_chars?(<<?\t, _rest::binary>>), do: true
+  defp do_contains_control_chars?(<<?\b, _rest::binary>>), do: true
+  defp do_contains_control_chars?(<<?\f, _rest::binary>>), do: true
+  # Skip ASCII bytes that aren't control chars
+  defp do_contains_control_chars?(<<byte, rest::binary>>) when byte < 128,
+    do: do_contains_control_chars?(rest)
+
+  # Skip multi-byte UTF-8 characters
+  defp do_contains_control_chars?(<<_byte::utf8, rest::binary>>),
+    do: do_contains_control_chars?(rest)
 
   defp starts_with_hyphen?(string) do
     String.starts_with?(string, "-")

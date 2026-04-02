@@ -9,6 +9,33 @@ defmodule ToonEx.Decode.StructuralParser do
   alias ToonEx.Decode.Parser
   alias ToonEx.DecodeError
 
+  # Performance: Inline hot functions to reduce function call overhead during decoding
+  @compile {:inline,
+            parse_value: 1,
+            do_parse_value: 1,
+            parse_number_or_string: 1,
+            unquote_string: 1,
+            unquote_key: 1,
+            extract_delimiter: 1,
+            parse_fields: 2,
+            parse_delimited_values: 2,
+            remove_list_marker: 1,
+            line_kind: 1,
+            tabular_array_header?: 1,
+            list_array_header?: 1,
+            inline_array_with_values?: 1,
+            list_array_header_only?: 1,
+            empty_list_item_value?: 1}
+
+  # Pre-compiled regex patterns for performance - avoids recompilation on every call
+  @tabular_array_header_regex ~r/^((?:"[^"]*"|[\w.]+))(\[\d+.*\])\{([^}]+)\}:$/
+  @root_tabular_array_regex ~r/^\[((\d+))([^\]]*)\]\{([^}]+)\}:$/
+  @list_array_header_regex ~r/^((?:"[^"]*"|[\w.]+))(\[\d+[^\]]*\]):$/
+  @array_length_regex ~r/\[(\d+)/
+  @array_header_with_values_regex ~r/\[(\d+)([^\]]*)\]$/
+  @inline_array_header_regex ~r/^\[([^\]]+)\]:\s*(.*)$/
+  @array_header_with_colon_regex ~r/^[\w"]+(\[(\d+)[^\]]*\]):/
+
   # Module-level regex patterns for structural matching
   @tabular_header_pattern ~r/^(?:"[^"]*"|[\w.]+)\[\d+.*\]\{[^}]+\}:$/
   @list_header_pattern ~r/^(?:"[^"]*"|[\w.]+)\[\d+.*\]:$/
@@ -250,7 +277,7 @@ defmodule ToonEx.Decode.StructuralParser do
       [array_marker, values_str] ->
         # Extract declared length from [N]
         declared_length =
-          case Regex.run(~r/\[(\d+)/, array_marker) do
+          case Regex.run(@array_length_regex, array_marker) do
             [_, length_str] -> String.to_integer(length_str)
             _ -> nil
           end
@@ -360,7 +387,7 @@ defmodule ToonEx.Decode.StructuralParser do
               # The Parser module may have already parsed numbers incorrectly
               # Extract array marker from content to get delimiter
               corrected_value =
-                case Regex.run(~r/^[\w"]+(\[(\d+)[^\]]*\]):/, content) do
+                case Regex.run(@array_header_with_colon_regex, content) do
                   [_, array_marker, length_str] ->
                     declared_length = String.to_integer(length_str)
                     delimiter = extract_delimiter(array_marker)
@@ -427,8 +454,8 @@ defmodule ToonEx.Decode.StructuralParser do
 
             case String.split(content, ": ", parts: 2) do
               [array_header, values_str] ->
-                # ← NEW: if the header contains [N], re-parse as array
-                case Regex.run(~r/\[(\d+)([^\]]*)\]$/, array_header) do
+                # Re-parse as array if header contains [N]
+                case Regex.run(@array_header_with_values_regex, array_header) do
                   [_, length_str, delimiter_marker] ->
                     declared_length = String.to_integer(length_str)
                     delimiter = extract_delimiter("[#{delimiter_marker}]")
@@ -560,7 +587,7 @@ defmodule ToonEx.Decode.StructuralParser do
 
   # Parse tabular array
   defp parse_tabular_array(%{content: header}, rest, base_indent, opts, metadata) do
-    case Regex.run(~r/^((?:"[^"]*"|[\w.]+))(\[\d+.*\])\{([^}]+)\}:$/, header) do
+    case Regex.run(@tabular_array_header_regex, header) do
       [_, raw_key, array_marker, fields_str] ->
         key = unquote_key(raw_key)
         was_quoted = key_was_quoted?(header)
@@ -571,7 +598,7 @@ defmodule ToonEx.Decode.StructuralParser do
 
         # Extract declared length from array_marker
         declared_length =
-          case Regex.run(~r/\[(\d+)/, array_marker) do
+          case Regex.run(@array_length_regex, array_marker) do
             [_, len_str] -> String.to_integer(len_str)
             nil -> nil
           end
@@ -629,7 +656,7 @@ defmodule ToonEx.Decode.StructuralParser do
 
   # Parse tabular array data (for root arrays)
   defp parse_tabular_array_data(header, rest, base_indent, opts) do
-    case Regex.run(~r/^\[((\d+))([^\]]*)\]\{([^}]+)\}:$/, header) do
+    case Regex.run(@root_tabular_array_regex, header) do
       [_, _full_length, length_str, delimiter_marker, fields_str] ->
         declared_length = String.to_integer(length_str)
         delimiter = extract_delimiter("[#{delimiter_marker}]")
@@ -653,10 +680,10 @@ defmodule ToonEx.Decode.StructuralParser do
 
   # Parse list array
   defp parse_list_array(%{content: header}, rest, base_indent, opts, metadata) do
-    case Regex.run(~r/^((?:"[^"]*"|[\w.]+))(\[\d+[^\]]*\]):$/, header) do
+    case Regex.run(@list_array_header_regex, header) do
       [_, raw_key, array_marker] ->
         length_str =
-          case Regex.run(~r/\[(\d+)/, array_marker) do
+          case Regex.run(@array_length_regex, array_marker) do
             [_, len] -> len
             nil -> "0"
           end
@@ -1129,7 +1156,7 @@ defmodule ToonEx.Decode.StructuralParser do
   # Parse inline array from a line like "[2]: a,b"
   defp parse_inline_array_from_line(trimmed, rest) do
     # Extract: [N], [N|], [N\t] format
-    case Regex.run(~r/^\[([^\]]+)\]:\s*(.*)$/, trimmed) do
+    case Regex.run(@inline_array_header_regex, trimmed) do
       [_, array_marker, values_str] ->
         delimiter = extract_delimiter(array_marker)
 
@@ -1172,20 +1199,31 @@ defmodule ToonEx.Decode.StructuralParser do
   end
 
   # Parse fields from tabular header - use active delimiter per TOON spec Section 6
+  # Performance: Use simple String.split when no quotes present (common case for simple identifiers)
   defp parse_fields(fields_str, delimiter) do
-    split_respecting_quotes(fields_str, delimiter)
-    |> Enum.map(&String.trim/1)
-    |> Enum.map(&unquote_key/1)
+    if String.contains?(fields_str, "\"") do
+      # Quoted field names present - use full quote-aware splitting
+      split_respecting_quotes(fields_str, delimiter)
+      |> Enum.map(&String.trim/1)
+      |> Enum.map(&unquote_key/1)
+    else
+      # Simple identifiers - fast path with String.split
+      String.split(fields_str, delimiter, trim: true)
+      |> Enum.map(&String.trim/1)
+    end
   end
 
   # Extract delimiter from array marker like [2], [2|], [2\t]
+  # Performance: Binary pattern matching instead of String.contains?
+  @compile {:inline, extract_delimiter: 1}
   defp extract_delimiter(array_marker) do
-    cond do
-      String.contains?(array_marker, "|") -> "|"
-      String.contains?(array_marker, "\t") -> "\t"
-      true -> ","
-    end
+    do_extract_delimiter(array_marker)
   end
+
+  defp do_extract_delimiter(<<>>), do: ","
+  defp do_extract_delimiter(<<?|, _rest::binary>>), do: "|"
+  defp do_extract_delimiter(<<?\t, _rest::binary>>), do: "\t"
+  defp do_extract_delimiter(<<_byte, rest::binary>>), do: do_extract_delimiter(rest)
 
   # Parse delimited values from row
   defp parse_delimited_values(row_str, delimiter) do
@@ -1196,12 +1234,19 @@ defmodule ToonEx.Decode.StructuralParser do
   end
 
   # Extract the auto-detect logic so both places that call it stay readable:
-  defp detect_delimiter(row_str, delimiter) do
-    if delimiter == "," and String.contains?(row_str, "\t") and
-         not String.contains?(row_str, ","),
-       do: "\t",
-       else: delimiter
+  # Performance: Single-pass binary scan instead of 2x String.contains?
+  @compile {:inline, detect_delimiter: 2}
+  defp detect_delimiter(row_str, ",") do
+    if do_has_tab_no_comma?(row_str), do: "\t", else: ","
   end
+
+  defp detect_delimiter(_row_str, delimiter), do: delimiter
+
+  # Single-pass binary scan: returns true if string contains tab but no comma
+  defp do_has_tab_no_comma?(<<>>), do: false
+  defp do_has_tab_no_comma?(<<?\t, _rest::binary>>), do: true
+  defp do_has_tab_no_comma?(<<?,, _rest::binary>>), do: false
+  defp do_has_tab_no_comma?(<<_byte, rest::binary>>), do: do_has_tab_no_comma?(rest)
 
   # Split a string by delimiter, but don't split inside quoted strings
   defp split_respecting_quotes(str, delimiter) do
@@ -1211,7 +1256,7 @@ defmodule ToonEx.Decode.StructuralParser do
 
   defp do_split_respecting_quotes("", _delimiter, current, _in_quote, acc) do
     # Reverse current iolist and convert to string, then reverse acc
-    current_str = current |> Enum.reverse() |> IO.iodata_to_binary()
+    current_str = current |> :lists.reverse() |> IO.iodata_to_binary()
     Enum.reverse([current_str | acc])
   end
 
@@ -1240,9 +1285,35 @@ defmodule ToonEx.Decode.StructuralParser do
     do_split_respecting_quotes(rest, delimiter, [<<char>> | current], in_quote, acc)
   end
 
-  # Parse a single value
+  # Parse a single value - optimized binary pattern matching for trimming
+  @compile {:inline, parse_value: 1}
   defp parse_value(str) do
-    str |> String.trim() |> do_parse_value()
+    str
+    |> do_trim_leading()
+    |> do_trim_trailing()
+    |> do_parse_value()
+  end
+
+  # Fast-path binary trimming - avoids String.trim overhead
+  @compile {:inline, do_trim_leading: 1, do_trim_trailing: 1}
+  defp do_trim_leading(<<?\s, rest::binary>>), do: do_trim_leading(rest)
+  defp do_trim_leading(<<?\t, rest::binary>>), do: do_trim_leading(rest)
+  defp do_trim_leading(str), do: str
+
+  # Performance: Single-pass trailing trim using binary slicing instead of recursive byte removal
+  defp do_trim_trailing(str) do
+    size = byte_size(str)
+    if size == 0, do: "", else: do_trim_trailing_loop(str, size - 1)
+  end
+
+  defp do_trim_trailing_loop(_str, -1), do: ""
+
+  defp do_trim_trailing_loop(str, idx) do
+    case :binary.at(str, idx) do
+      ?\s -> do_trim_trailing_loop(str, idx - 1)
+      ?\t -> do_trim_trailing_loop(str, idx - 1)
+      _ -> :binary.part(str, 0, idx + 1)
+    end
   end
 
   defp do_parse_value("null"), do: nil
@@ -1279,9 +1350,13 @@ defmodule ToonEx.Decode.StructuralParser do
     end
   end
 
-  defp has_decimal_or_exponent?(str) do
-    String.contains?(str, ".") or String.contains?(str, "e") or String.contains?(str, "E")
-  end
+  # Performance: Single-pass binary scan instead of 3x String.contains?
+  @compile {:inline, has_decimal_or_exponent?: 1}
+  defp has_decimal_or_exponent?(<<>>), do: false
+  defp has_decimal_or_exponent?(<<?., _rest::binary>>), do: true
+  defp has_decimal_or_exponent?(<<?e, _rest::binary>>), do: true
+  defp has_decimal_or_exponent?(<<?E, _rest::binary>>), do: true
+  defp has_decimal_or_exponent?(<<_byte, rest::binary>>), do: has_decimal_or_exponent?(rest)
 
   defp normalize_decimal_number(num) when num == trunc(num), do: trunc(num)
   defp normalize_decimal_number(num), do: num
@@ -1348,7 +1423,7 @@ defmodule ToonEx.Decode.StructuralParser do
   defp unescape_string(str), do: do_unescape(str, [])
 
   defp do_unescape(<<>>, acc),
-    do: acc |> Enum.reverse() |> IO.iodata_to_binary()
+    do: acc |> :lists.reverse() |> IO.iodata_to_binary()
 
   defp do_unescape(<<"\\", char, rest::binary>>, acc) do
     replacement =

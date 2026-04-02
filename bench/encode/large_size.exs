@@ -1,3 +1,6 @@
+# Large size encode benchmark
+# Tests encoding performance for large objects (~5KB) with tabular arrays
+
 data_large = %{
   "users" =>
     Enum.map(1..50, fn i ->
@@ -18,12 +21,15 @@ data_large = %{
 
 Benchee.run(
   %{
-    "ToonEx.encode! (large)" => fn -> ToonEx.encode!(data_large) end,
-    "JSON.encode! (large)" => fn -> JSON.encode!(data_large) end
+    "ToonEx.encode!" => fn -> ToonEx.encode!(data_large) end,
+    "JSON.encode!" => fn -> JSON.encode!(data_large) end
   },
-  time: 10,
+  time: 5,
   memory_time: 2,
   formatters: [
-    Benchee.Formatters.Console
+    {Benchee.Formatters.Console, comparisons: true}
+  ],
+  print: [
+    fast_warning: false
   ]
 )

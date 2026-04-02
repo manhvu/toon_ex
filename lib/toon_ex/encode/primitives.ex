@@ -3,6 +3,10 @@ defmodule ToonEx.Encode.Primitives do
   Encoding of primitive TOON values (nil, boolean, number, string).
   """
 
+  # Performance: Inline hot functions to reduce function call overhead
+  @compile {:inline,
+            encode: 2, format_float: 1, scientific?: 1, to_decimal: 1, trim_trailing_zeros: 1}
+
   alias ToonEx.Constants
   alias ToonEx.Encode.Strings
 

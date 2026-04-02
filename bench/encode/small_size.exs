@@ -1,13 +1,19 @@
+# Small size encode benchmark
+# Tests encoding performance for small objects (~50 bytes)
+
 data_small = %{"name" => "Alice", "age" => 30}
 
 Benchee.run(
   %{
-    "ToonEx.encode! (small)" => fn -> ToonEx.encode!(data_small) end,
-    "JSON.encode! (small)" => fn -> JSON.encode!(data_small) end
+    "ToonEx.encode!" => fn -> ToonEx.encode!(data_small) end,
+    "JSON.encode!" => fn -> JSON.encode!(data_small) end
   },
-  time: 10,
+  time: 5,
   memory_time: 2,
   formatters: [
-    Benchee.Formatters.Console
+    {Benchee.Formatters.Console, comparisons: true}
+  ],
+  print: [
+    fast_warning: false
   ]
 )

@@ -63,8 +63,17 @@ defmodule ToonEx.Utils do
   """
   @spec all_primitives?(list()) :: boolean()
   def all_primitives?(list) when is_list(list) do
-    Enum.all?(list, &primitive?/1)
+    do_all_primitives?(list)
   end
+
+  # Tail-recursive helper for performance
+  defp do_all_primitives?([]), do: true
+
+  defp do_all_primitives?([h | t])
+       when is_nil(h) or is_boolean(h) or is_number(h) or is_binary(h),
+       do: do_all_primitives?(t)
+
+  defp do_all_primitives?(_), do: false
 
   @doc """
   Checks if all elements in a list are maps.
@@ -85,8 +94,13 @@ defmodule ToonEx.Utils do
   """
   @spec all_maps?(list()) :: boolean()
   def all_maps?(list) when is_list(list) do
-    Enum.all?(list, &map?/1)
+    do_all_maps?(list)
   end
+
+  # Tail-recursive helper for performance
+  defp do_all_maps?([]), do: true
+  defp do_all_maps?([h | t]) when is_map(h), do: do_all_maps?(t)
+  defp do_all_maps?(_), do: false
 
   @doc """
   Checks if all maps in a list have the same keys (for tabular format detection).
@@ -114,13 +128,23 @@ defmodule ToonEx.Utils do
   # don't treat empty maps has same keys
   def same_keys?([first | rest]) when is_map(first) and map_size(first) > 0 do
     first_keys = Map.keys(first) |> Enum.sort()
-
-    Enum.all?(rest, fn map ->
-      is_map(map) and Map.keys(map) |> Enum.sort() == first_keys
-    end)
+    do_same_keys?(rest, first_keys)
   end
 
   def same_keys?(_), do: false
+
+  # Tail-recursive helper for performance
+  defp do_same_keys?([], _first_keys), do: true
+
+  defp do_same_keys?([map | rest], first_keys) when is_map(map) do
+    if Map.keys(map) |> Enum.sort() == first_keys do
+      do_same_keys?(rest, first_keys)
+    else
+      false
+    end
+  end
+
+  defp do_same_keys?(_, _), do: false
 
   @doc """
   Checks if all values in all maps of a list are primitives (for tabular format).
@@ -147,12 +171,38 @@ defmodule ToonEx.Utils do
   def all_primitive_values?([]), do: true
 
   def all_primitive_values?(list) when is_list(list) do
-    Enum.all?(list, fn map ->
-      is_map(map) and Enum.all?(map, fn {_k, v} -> primitive?(v) end)
-    end)
+    do_all_primitive_values?(list)
   end
 
   def all_primitive_values?(_), do: false
+
+  # Tail-recursive helper for performance - single pass through all maps and values
+  defp do_all_primitive_values?([]), do: true
+
+  defp do_all_primitive_values?([map | rest]) when is_map(map) do
+    if do_all_values_primitive?(map) do
+      do_all_primitive_values?(rest)
+    else
+      false
+    end
+  end
+
+  defp do_all_primitive_values?(_), do: false
+
+  # Tail-recursive helper to check all values in a single map
+  defp do_all_values_primitive?(map) when is_map(map) do
+    do_all_values_primitive?(map, Map.keys(map))
+  end
+
+  defp do_all_values_primitive?(_map, []), do: true
+
+  defp do_all_values_primitive?(map, [key | rest]) do
+    case Map.get(map, key) do
+      nil -> do_all_values_primitive?(map, rest)
+      v when is_boolean(v) or is_number(v) or is_binary(v) -> do_all_values_primitive?(map, rest)
+      _ -> false
+    end
+  end
 
   @doc """
   Repeats a string n times.
@@ -190,32 +240,35 @@ defmodule ToonEx.Utils do
       nil
   """
   @spec normalize(term()) :: ToonEx.Types.encodable()
+  # Performance: Inline hot function to reduce call overhead
+  @compile {:inline, normalize: 1}
+
+  # Fast-path for primitives - return immediately
   def normalize(nil), do: nil
   def normalize(value) when is_boolean(value), do: value
   def normalize(value) when is_binary(value), do: value
+
+  # Atoms must be converted to strings
   def normalize(value) when is_atom(value), do: Atom.to_string(value)
 
+  # Numbers: normalize zero and check finiteness per TOON spec Section 2
   def normalize(value) when is_number(value) do
     cond do
-      # Any zero (positive or negative) → integer 0 per TOON spec.
-      # The previous atan2 trick was inverted: atan2(+0.0,-1)=+π, atan2(-0.0,-1)=-π,
-      # so the old guard was matching +0.0 and letting -0.0 fall through unchanged.
       value == 0 -> 0
       not is_finite(value) -> nil
       true -> value
     end
   end
 
+  # Lists: tail-recursive normalization for performance
   def normalize(value) when is_list(value) do
-    Enum.map(value, &normalize/1)
+    do_normalize_list(value, [])
   end
 
   # Structs - dispatch to ToonEx.Encoder protocol
   def normalize(%{__struct__: _} = struct) do
     result = ToonEx.Encoder.encode(struct, [])
 
-    # If encoder returns iodata (string), convert it to binary
-    # If encoder returns a map (from @derive), normalize it recursively
     case result do
       binary when is_binary(binary) -> binary
       map when is_map(map) -> normalize(map)
@@ -223,14 +276,31 @@ defmodule ToonEx.Utils do
     end
   end
 
+  # Maps: optimize key conversion and value normalization
   def normalize(value) when is_map(value) do
-    for {k, v} <- value, into: %{}, do: {to_string(k), normalize(v)}
+    do_normalize_map(value, %{})
   end
 
   # Fallback for unsupported types
   def normalize(_value), do: nil
 
+  # Tail-recursive list normalization - avoids intermediate list allocations
+  defp do_normalize_list([], acc), do: :lists.reverse(acc)
+  defp do_normalize_list([h | t], acc), do: do_normalize_list(t, [normalize(h) | acc])
+
+  # Map normalization with accumulator - avoids comprehension overhead
+  defp do_normalize_map(map, acc) do
+    :maps.fold(
+      fn k, v, acc_map ->
+        Map.put(acc_map, to_string(k), normalize(v))
+      end,
+      acc,
+      map
+    )
+  end
+
   # Private helper to check if a number is finite
+  @compile {:inline, is_finite: 1}
   defp is_finite(value) when is_float(value) do
     # NaN check: NaN != NaN is the standard IEEE 754 way to detect NaN
     # credo:disable-for-lines:2

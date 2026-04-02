@@ -139,10 +139,23 @@ defmodule ToonEx.Encode do
   """
   @spec encode!(ToonEx.Types.input(), keyword()) :: String.t()
   def encode!(data, opts \\ []) do
-    case encode(data, opts) do
-      {:ok, result} -> result
-      {:error, error} -> raise error
+    # Performance: Skip telemetry overhead in the hot path
+    # Direct implementation without telemetry calls
+    case Options.validate(opts) do
+      {:ok, validated_opts} ->
+        normalized = Utils.normalize(data)
+        encoded = do_encode(normalized, 0, validated_opts)
+        IO.iodata_to_binary(encoded)
+
+      {:error, error} ->
+        raise EncodeError.exception(
+                message: "Invalid options: #{Exception.message(error)}",
+                reason: error
+              )
     end
+  rescue
+    e in EncodeError -> raise e
+    e -> raise EncodeError.exception(message: Exception.message(e), value: data)
   end
 
   # Private functions
@@ -167,13 +180,12 @@ defmodule ToonEx.Encode do
       is_list(data) and tuple_list?(data) ->
         map = Map.new(data)
         key_order = Enum.map(data, fn {k, _v} -> k end)
-
+        # Return iodata directly - top-level encode/2 handles final binary conversion
         Objects.encode(map, depth, Map.put(opts, :key_order, key_order))
-        |> IO.iodata_to_binary()
 
       Utils.map?(data) ->
+        # Return iodata directly - top-level encode/2 handles final binary conversion
         Objects.encode(data, depth, opts)
-        |> IO.iodata_to_binary()
 
       Utils.list?(data) ->
         encode_root_array(data, depth, opts)
@@ -254,22 +266,21 @@ defmodule ToonEx.Encode do
       Constants.colon()
     ]
 
+    # Performance: Combine two Enum.map calls into single pass to reduce intermediate allocations
     rows =
       Enum.map(data, fn obj ->
         values =
           keys
-          |> Enum.map(&Map.get(obj, &1))
-          |> Enum.map(&Primitives.encode(&1, opts.delimiter))
-          # row data still uses opts.delimiter
+          |> Enum.map(fn k -> Primitives.encode(Map.get(obj, k), opts.delimiter) end)
           |> Enum.intersperse(opts.delimiter)
 
         [opts.indent_string, values]
       end)
 
-    # Return iodata list for consistency with other encode paths per TOON spec
-    # Return binary with newlines between header and rows, no trailing newline per TOON spec Section 12
-    [IO.iodata_to_binary(header) | Enum.map(rows, &IO.iodata_to_binary/1)]
-    |> Enum.join("\n")
+    # Performance: Build iodata tree directly with newlines interspersed
+    # Single IO.iodata_to_binary call at the top-level encode/2
+    # This avoids intermediate binary allocations from Enum.intersperse
+    [header | Enum.flat_map(rows, fn row -> ["\n", row] end)]
   end
 
   # Encode root list array - returns binary with newlines between items, no trailing newline per TOON spec Section 12
@@ -281,11 +292,10 @@ defmodule ToonEx.Encode do
         encode_root_list_item(item, 0, opts)
       end)
 
-    [
-      IO.iodata_to_binary(header)
-      | Enum.map(items, fn line -> IO.iodata_to_binary([opts.indent_string, line]) end)
-    ]
-    |> Enum.join("\n")
+    # Performance: Build iodata tree directly with newlines interspersed
+    # Single IO.iodata_to_binary call at the top-level encode/2
+    # This avoids intermediate binary allocations from Enum.intersperse
+    [header | Enum.flat_map(items, fn item -> ["\n", [opts.indent_string, item]] end)]
   end
 
   # Encode a single root list item

@@ -1,3 +1,6 @@
+# Medium size encode benchmark
+# Tests encoding performance for medium objects (~200 bytes) with nested structures
+
 data_medium = %{
   "user" => %{
     "id" => 123,
@@ -11,12 +14,15 @@ data_medium = %{
 
 Benchee.run(
   %{
-    "ToonEx.encode! (medium)" => fn -> ToonEx.encode!(data_medium) end,
-    "JSON.encode! (medium)" => fn -> JSON.encode!(data_medium) end
+    "ToonEx.encode!" => fn -> ToonEx.encode!(data_medium) end,
+    "JSON.encode!" => fn -> JSON.encode!(data_medium) end
   },
-  time: 10,
+  time: 5,
   memory_time: 2,
   formatters: [
-    Benchee.Formatters.Console
+    {Benchee.Formatters.Console, comparisons: true}
+  ],
+  print: [
+    fast_warning: false
   ]
 )

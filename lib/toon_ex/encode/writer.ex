@@ -8,28 +8,43 @@ defmodule ToonEx.Encode.Writer do
     %__MODULE__{lines: [], indent_string: String.duplicate(" ", indent_size)}
   end
 
+  # Performance: Use :binary.copy for repeated string duplication - faster than String.duplicate
+  @compile {:inline, build_indent: 2}
+  defp build_indent(indent_string, depth) when depth >= 0 do
+    :binary.copy(indent_string, depth)
+  end
+
   def push(%__MODULE__{} = w, content, depth) when is_integer(depth) and depth >= 0 do
-    %{w | lines: [[List.duplicate(w.indent_string, depth), content] | w.lines]}
+    indent = build_indent(w.indent_string, depth)
+    %{w | lines: [[indent, content] | w.lines]}
   end
 
   def push_many(%__MODULE__{} = w, lines, depth) when is_list(lines) do
-    Enum.reduce(lines, w, &push(&2, &1, depth))
+    indent = build_indent(w.indent_string, depth)
+    # Performance: Single-pass accumulation instead of repeated push calls
+    new_lines = Enum.reduce(lines, w.lines, fn line, acc -> [[indent, line] | acc] end)
+    %{w | lines: new_lines}
   end
 
-  # NEW — returns lines in document order, NO newlines interspersed.
-  # Use this when you need to pipe into another Writer or collect for joining.
+  # Performance: Use :lists.reverse instead of Enum.reverse for better performance
   @spec to_lines(t()) :: [iodata()]
-  def to_lines(%__MODULE__{lines: lines}), do: Enum.reverse(lines)
+  def to_lines(%__MODULE__{lines: lines}), do: :lists.reverse(lines)
 
-  # Kept for external callers (e.g. ToonEx.Encode.do_encode → IO.iodata_to_binary).
-  # Internally, prefer to_lines/1 + join to avoid the intermediate list from
-  # Enum.intersperse.
-  @spec to_iodata(t()) :: [iodata()]
+  # Performance: Build iodata tree directly without Enum.intersperse intermediate list
+  @spec to_iodata(t()) :: iodata()
   def to_iodata(%__MODULE__{} = w) do
-    # Enum.intersperse builds a new list the same length as 2N-1.
-    # For large documents prefer: to_lines(w) |> Enum.join("\n")
-    w |> to_lines() |> Enum.intersperse(Constants.newline())
+    lines = :lists.reverse(w.lines)
+    newline = Constants.newline()
+    # Build iodata tree: [line1, "\n", line2, "\n", ...]
+    do_build_iodata(lines, newline, [])
   end
+
+  # Tail-recursive iodata builder - avoids Enum.intersperse allocation
+  defp do_build_iodata([], _newline, acc), do: :lists.reverse(acc)
+  defp do_build_iodata([line], _newline, acc), do: :lists.reverse([line | acc])
+
+  defp do_build_iodata([line | rest], newline, acc),
+    do: do_build_iodata(rest, newline, [newline, line | acc])
 
   @spec to_string(t()) :: String.t()
   def to_string(%__MODULE__{} = w), do: w |> to_lines() |> Enum.join("\n")

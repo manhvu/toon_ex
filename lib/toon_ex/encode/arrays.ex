@@ -146,12 +146,11 @@ defmodule ToonEx.Encode.Arrays do
       Constants.colon()
     ]
 
+    # Performance: Combine two Enum.map calls into single pass to reduce intermediate allocations
     rows =
       Enum.map(list, fn obj ->
         keys
-        |> Enum.map(&Map.get(obj, &1))
-        |> Enum.map(&Primitives.encode(&1, opts.delimiter))
-        # row data still uses opts.delimiter
+        |> Enum.map(fn k -> Primitives.encode(Map.get(obj, k), opts.delimiter) end)
         |> Enum.intersperse(opts.delimiter)
       end)
 

@@ -1,3 +1,6 @@
+# Medium size decode benchmark
+# Tests decoding performance for medium objects (~200 bytes) with nested structures
+
 toon_medium = """
 id: 123
 name: Bob
@@ -19,12 +22,15 @@ json_medium =
 
 Benchee.run(
   %{
-    "ToonEx.decode! (medium)" => fn -> ToonEx.decode!(toon_medium) end,
-    "JSON.decode! (medium)" => fn -> JSON.decode!(json_medium) end
+    "ToonEx.decode!" => fn -> ToonEx.decode!(toon_medium) end,
+    "JSON.decode!" => fn -> JSON.decode!(json_medium) end
   },
-  time: 10,
+  time: 5,
   memory_time: 2,
   formatters: [
-    Benchee.Formatters.Console
+    {Benchee.Formatters.Console, comparisons: true}
+  ],
+  print: [
+    fast_warning: false
   ]
 )
