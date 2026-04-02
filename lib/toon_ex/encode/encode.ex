@@ -205,85 +205,144 @@ defmodule ToonEx.Encode do
   defp tuple_list?(_), do: false
 
   # Encode root-level array per TOON spec Section 5
+  # Performance: Single-pass array type detection instead of multiple Enum traversals
+  defp encode_root_array([], _depth, opts) do
+    length_marker = format_length_marker(0, opts.length_marker)
+    ["[", length_marker, "]:"]
+  end
+
   defp encode_root_array(data, depth, opts) do
-    length_marker = format_length_marker(length(data), opts.length_marker)
-    delimiter_marker = format_delimiter_marker(opts.delimiter)
+    # Single-pass detection: determines array type while computing length
+    case do_detect_array_type(data, {true, true, true, nil, 0}) do
+      {:primitive, length} ->
+        length_marker = format_length_marker(length, opts.length_marker)
+        delimiter_marker = format_delimiter_marker(opts.delimiter)
 
-    cond do
-      # Empty array
-      Enum.empty?(data) ->
-        length_marker = format_length_marker(0, opts.length_marker)
-        [@open_bracket, length_marker, @close_bracket, @colon]
-
-      # Inline array (all primitives)
-      Utils.all_primitives?(data) ->
         values =
           data
           |> Enum.map(&Primitives.encode(&1, opts.delimiter))
           |> Enum.intersperse(opts.delimiter)
 
-        [@open_bracket, length_marker, delimiter_marker, @close_bracket, @colon, @space, values]
+        ["[", length_marker, delimiter_marker, "]: ", values]
 
-      # Tabular array (all maps with same keys and primitive values only)
-      Utils.all_maps?(data) and Utils.same_keys?(data) and Utils.all_primitive_values?(data) ->
-        encode_root_tabular_array(data, length_marker, delimiter_marker, opts)
+      {:tabular, length, keys} ->
+        length_marker = format_length_marker(length, opts.length_marker)
+        delimiter_marker = format_delimiter_marker(opts.delimiter)
+        encode_root_tabular_array(data, keys, length_marker, delimiter_marker, opts)
 
-      # List format (mixed or non-uniform)
-      true ->
+      {:list, length} ->
+        length_marker = format_length_marker(length, opts.length_marker)
+        delimiter_marker = format_delimiter_marker(opts.delimiter)
         encode_root_list_array(data, length_marker, delimiter_marker, depth, opts)
     end
   end
 
-  # Encode root tabular array
-  #
-  defp encode_root_tabular_array(data, length_marker, delimiter_marker, opts) do
-    keys =
-      case data do
-        [first | _] ->
-          map_keys = Map.keys(first)
-          key_order = Map.get(opts, :key_order)
+  # Single-pass array type detection
+  # State: {all_primitives, all_maps, all_primitive_values, keys, count}
+  # Tabular: all maps with same keys and all primitive values
+  defp do_detect_array_type([], {false, true, true, keys, count}) when is_list(keys) and keys != [],
+    do: {:tabular, count, keys}
 
-          if is_list(key_order) and not Enum.empty?(key_order) do
-            ordered = Enum.filter(key_order, &(&1 in map_keys))
-            if length(ordered) == length(map_keys), do: ordered, else: Enum.sort(map_keys)
+  # Primitive: all primitives (no maps)
+  defp do_detect_array_type([], {true, _, _, _, count}),
+    do: {:primitive, count}
+
+  # List: everything else (mixed, non-uniform maps, or maps with non-primitive values)
+  defp do_detect_array_type([], {_, _, _, _, count}),
+    do: {:list, count}
+
+  defp do_detect_array_type([h | t], {all_prim, all_maps, all_prim_vals, keys, count}) do
+    new_count = count + 1
+
+    cond do
+      # Early exit: already determined as list (has both primitives and maps, or maps with non-primitive values)
+      (not all_prim and not all_maps) or (all_maps and not all_prim_vals) ->
+        do_count_remaining(t, new_count)
+
+      # Primitive element - makes it not all-maps
+      is_nil(h) or is_boolean(h) or is_number(h) or is_binary(h) ->
+        do_detect_array_type(t, {all_prim, false, all_prim_vals, nil, new_count})
+
+      # Map element
+      is_map(h) ->
+        h_keys = Map.keys(h) |> Enum.sort()
+        h_all_prim = do_all_values_primitive?(h)
+
+        new_keys =
+          if keys do
+            if h_keys == keys, do: keys, else: nil
           else
-            Enum.sort(map_keys)
+            h_keys
           end
 
-        [] ->
-          []
+        # If values aren't all primitive, we can early-exit to list
+        if not h_all_prim do
+          do_count_remaining(t, new_count)
+        else
+          do_detect_array_type(t, {false, all_maps, all_prim_vals and h_all_prim, new_keys, new_count})
+        end
+
+      # Other element -> list
+      true ->
+        do_count_remaining(t, new_count)
+    end
+  end
+
+  defp do_count_remaining([], count), do: {:list, count}
+  defp do_count_remaining([_ | t], count), do: do_count_remaining(t, count + 1)
+
+  defp do_all_values_primitive?(map) do
+    :maps.fold(fn _k, v, acc -> acc and do_is_primitive?(v) end, true, map)
+  end
+
+  defp do_is_primitive?(v) when is_nil(v) or is_boolean(v) or is_number(v) or is_binary(v),
+    do: true
+
+  defp do_is_primitive?(_), do: false
+
+  # Encode root tabular array - builds binary directly for memory efficiency
+  # Encode root tabular array
+  # Performance: Accepts pre-computed keys from single-pass detection
+  defp encode_root_tabular_array(data, keys, length_marker, delimiter_marker, opts) do
+    # Apply key_order if provided, otherwise use pre-computed sorted keys
+    final_keys =
+      case Map.get(opts, :key_order) do
+        key_order when is_list(key_order) and key_order != [] ->
+          ordered = Enum.filter(key_order, &(&1 in keys))
+          if length(ordered) == length(keys), do: ordered, else: keys
+
+        _ ->
+          keys
       end
 
     # Field names in {…} use the active delimiter per TOON spec Section 6.
-    fields = keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(opts.delimiter)
+    fields = final_keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(opts.delimiter)
+    # Build header as binary directly with braces around fields
+    fields_bin = do_build_fields_binary(final_keys, opts.delimiter, <<>>)
+    header_bin = "[#{length_marker}#{delimiter_marker}]#{fields_bin}:"
 
-    header = [
-      @open_bracket,
-      length_marker,
-      delimiter_marker,
-      @close_bracket,
-      @open_brace,
-      fields,
-      @close_brace,
-      @colon
-    ]
+    # Build rows as binary directly - single pass with binary concatenation
+    indent = opts.indent_string
+    delim = opts.delimiter
 
-    # Performance: Combine two Enum.map calls into single pass to reduce intermediate allocations
-    rows =
-      Enum.map(data, fn obj ->
-        values =
-          keys
-          |> Enum.map(fn k -> Primitives.encode(Map.get(obj, k), opts.delimiter) end)
-          |> Enum.intersperse(opts.delimiter)
-
-        [opts.indent_string, values]
-      end)
-
-    # Performance: Build iodata tree directly with newlines interspersed
-    # Single IO.iodata_to_binary call at the top-level encode/2
-    # This avoids intermediate binary allocations from Enum.intersperse
-    [header | Enum.flat_map(rows, fn row -> ["\n", row] end)]
+    Enum.reduce(data, header_bin, fn obj, acc ->
+      row_bin = do_build_row_binary(final_keys, obj, delim, <<>>)
+      <<acc::binary, ?\n, indent::binary, row_bin::binary>>
+    end)
   end
+
+  # Performance: Tail-recursive binary field builder with braces
+  defp do_build_fields_binary([], _delim, acc), do: <<"{", acc::binary, "}">>
+  defp do_build_fields_binary([k], _delim, acc), do: <<"{", acc::binary, Strings.encode_key(k)::binary, "}">>
+  defp do_build_fields_binary([k | rest], delim, acc),
+    do: do_build_fields_binary(rest, delim, <<acc::binary, Strings.encode_key(k)::binary, delim::binary>>)
+
+  # Performance: Tail-recursive binary row value builder
+  defp do_build_row_binary([], _obj, _delim, acc), do: acc
+  defp do_build_row_binary([k], obj, delim, acc),
+    do: <<acc::binary, Primitives.encode(Map.get(obj, k), delim)::binary>>
+  defp do_build_row_binary([k | rest], obj, delim, acc),
+    do: do_build_row_binary(rest, obj, delim, <<acc::binary, Primitives.encode(Map.get(obj, k), delim)::binary, delim::binary>>)
 
   # Encode root list array - returns binary with newlines between items, no trailing newline per TOON spec Section 12
   defp encode_root_list_array(data, length_marker, delimiter_marker, _depth, opts) do
@@ -294,10 +353,9 @@ defmodule ToonEx.Encode do
         encode_root_list_item(item, 0, opts)
       end)
 
-    # Performance: Build iodata tree directly with newlines interspersed
-    # Single IO.iodata_to_binary call at the top-level encode/2
-    # This avoids intermediate binary allocations from Enum.intersperse
+    # Build iodata tree with newlines interspersed, then convert to binary
     [header | Enum.flat_map(items, fn item -> ["\n", [opts.indent_string, item]] end)]
+    |> IO.iodata_to_binary()
   end
 
   # Encode a single root list item

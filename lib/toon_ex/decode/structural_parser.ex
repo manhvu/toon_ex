@@ -221,6 +221,7 @@ defmodule ToonEx.Decode.StructuralParser do
             {:root_primitive, nil}
         end
 
+      # Multiple lines -> object
       true ->
         {:object, nil}
     end
@@ -239,11 +240,77 @@ defmodule ToonEx.Decode.StructuralParser do
   end
 
   defp valid_primitive?(content) do
+    # Performance: Binary/String checks instead of regex for primitive validation
+    # Original: content in ~w(null true false) or
+    #           String.starts_with?(content, "\"") or
+    #           String.match?(content, ~r/^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$/) or
+    #           not String.match?(content, ~r/[:,\n\r]/)
+    # Unquoted string: valid if it doesn't contain :, ,, \n, or \r
     content in ~w(null true false) or
       String.starts_with?(content, "\"") or
-      String.match?(content, ~r/^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$/) or
-      not String.match?(content, ~r/[:,\n\r]/)
+      do_valid_number_format?(content) or
+      not do_contains_colon_comma_newline?(content)
   end
+
+  # Performance: Binary scan for forbidden characters in unquoted strings
+  # Checks for: : , \n \r
+  defp do_contains_colon_comma_newline?(<<>>), do: false
+  defp do_contains_colon_comma_newline?(<<?:, _rest::binary>>), do: true
+  defp do_contains_colon_comma_newline?(<<?,, _rest::binary>>), do: true
+  defp do_contains_colon_comma_newline?(<<?\n, _rest::binary>>), do: true
+  defp do_contains_colon_comma_newline?(<<?\r, _rest::binary>>), do: true
+
+  defp do_contains_colon_comma_newline?(<<_byte, rest::binary>>),
+    do: do_contains_colon_comma_newline?(rest)
+
+  # Performance: Binary character range checks instead of regex for number format validation
+  # Matches: ^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$
+  defp do_valid_number_format?(<<>>), do: false
+  defp do_valid_number_format?(<<?-, rest::binary>>), do: do_valid_number_digits?(rest)
+
+  defp do_valid_number_format?(<<c, rest::binary>>) when c in ?0..?9,
+    do: do_valid_number_digits?(<<c, rest::binary>>)
+
+  defp do_valid_number_format?(_), do: false
+
+  defp do_valid_number_digits?(<<>>), do: true
+
+  defp do_valid_number_digits?(<<c, rest::binary>>) when c in ?0..?9,
+    do: do_valid_number_digits?(rest)
+
+  defp do_valid_number_digits?(<<?., rest::binary>>), do: do_valid_number_frac?(rest)
+
+  defp do_valid_number_digits?(<<c, rest::binary>>) when c == ?e or c == ?E,
+    do: do_valid_number_exp_sign?(rest)
+
+  defp do_valid_number_digits?(_), do: false
+
+  defp do_valid_number_frac?(<<>>), do: true
+
+  defp do_valid_number_frac?(<<c, rest::binary>>) when c in ?0..?9,
+    do: do_valid_number_frac?(rest)
+
+  defp do_valid_number_frac?(<<c, rest::binary>>) when c == ?e or c == ?E,
+    do: do_valid_number_exp_sign?(rest)
+
+  defp do_valid_number_frac?(_), do: false
+
+  defp do_valid_number_exp_sign?(<<>>), do: false
+
+  defp do_valid_number_exp_sign?(<<c, rest::binary>>) when c == ?+ or c == ?-,
+    do: do_valid_number_exp_digits?(rest)
+
+  defp do_valid_number_exp_sign?(<<c, rest::binary>>) when c in ?0..?9,
+    do: do_valid_number_exp_digits?(<<c, rest::binary>>)
+
+  defp do_valid_number_exp_sign?(_), do: false
+
+  defp do_valid_number_exp_digits?(<<>>), do: true
+
+  defp do_valid_number_exp_digits?(<<c, rest::binary>>) when c in ?0..?9,
+    do: do_valid_number_exp_digits?(rest)
+
+  defp do_valid_number_exp_digits?(_), do: false
 
   # Parse root-level array
   defp parse_root_array([%{content: header_line} = line_info | rest], opts, metadata) do
@@ -270,15 +337,16 @@ defmodule ToonEx.Decode.StructuralParser do
   defp parse_complex_root_array(%{content: header}, rest, opts, metadata) do
     cond do
       # Inline array with delimiter marker: [3\t]: ... or [3|]: ... or [3]: ...
-      String.match?(header, ~r/^\[\d+[^\]]*\]: /) ->
+      String.starts_with?(header, "[") and String.contains?(header, "]: ") ->
         {parse_root_inline_array(header, opts), metadata}
 
       # Tabular array: [N]{fields}:
-      String.match?(header, ~r/^\[\d+[^\]]*\]\{[^}]+\}:$/) ->
+      String.starts_with?(header, "[") and String.contains?(header, "]{") and
+          String.ends_with?(header, "}:") ->
         {parse_tabular_array_data(header, rest, 0, opts), metadata}
 
       # List array: [N]:
-      String.match?(header, ~r/^\[\d+[^\]]*\]:$/) ->
+      String.starts_with?(header, "[") and String.ends_with?(header, "]:") ->
         {parse_list_array_items(rest, 0, opts), metadata}
 
       true ->
@@ -316,9 +384,10 @@ defmodule ToonEx.Decode.StructuralParser do
   end
 
   # Helper function to build map with appropriate key type
+  # Performance: Use :maps.from_list/1 for string keys (faster C implementation than Map.new/1)
   defp build_map_with_keys(entries, opts) do
     case opts.keys do
-      :strings -> Map.new(entries)
+      :strings -> :maps.from_list(entries)
       :atoms -> Map.new(entries, fn {k, v} -> {String.to_atom(k), v} end)
       :atoms! -> Map.new(entries, fn {k, v} -> {String.to_existing_atom(k), v} end)
     end
@@ -757,7 +826,8 @@ defmodule ToonEx.Decode.StructuralParser do
 
       # Inline array item with values on same line: - [N]: val1,val2
       # (must have content after ": ", otherwise it's a list-format array header)
-      String.match?(line.content, ~r/^\s*- \[.*\]: .+/) ->
+      String.contains?(line.content, "]: ") and
+          String.starts_with?(String.trim_leading(line.content), "- [") ->
         {item, remaining} = parse_inline_array_item(line, rest, expected_indent, opts)
         parse_list_items(remaining, expected_indent, opts, [item | acc])
 

@@ -4,22 +4,22 @@
 [![Documentation](https://img.shields.io/badge/docs-hexdocs-blue.svg)](https://hexdocs.pm/toon_ex)
 [![License: MIT](https://img.shields.io/badge/license-MIT-fef3c0?labelColor=1b1b1f)](./LICENSE.md)
 
-**TOON (Token-Oriented Object Notation)** encoder and decoder for Elixir and Phoenix.
+**TOON (Token-Oriented Object Notation)** high performance encoder and decoder for Elixir and Phoenix Channels.
 
 TOON is a compact data format optimized for LLM token efficiency.
 
 The library is supported for Phoenix Channels. Guide in `ToonEx.Phoenix.Serializer` module.
 
+*Completed with support from AI.*
+
 ## Features
 
 - 🎯 **Token Efficient**: 30-60% fewer tokens than JSON
 - 📖 **Human Readable**: Indentation-based structure like YAML
-- 🔧 **Three Array Formats**: Inline, tabular, and list formats
 - ✅ **Spec Compliant**: Tested against official TOON v1.3 specification
-- 🛡️ **Type Safe**: Full Dialyzer support with comprehensive typespecs
 - 🔌 **Protocol Support**: Custom encoding via `ToonEx.Encoder` protocol
-- 📊 **Telemetry**: Built-in instrumentation for monitoring
 - 🛠️ **Convertor**: Support convert between JSON & TOON
+- 💻 **Phoenix Channels**: Support for serializer/parser
 
 ## Installation
 
@@ -198,7 +198,7 @@ Contributions are welcome!
 Created by
 **Kentaro Kuribayashi**
 
-Forked and updated by
+Maintained and optimized by
 **Manh Vu**
 
 ## License

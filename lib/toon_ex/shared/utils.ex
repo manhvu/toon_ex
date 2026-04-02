@@ -243,7 +243,7 @@ defmodule ToonEx.Utils do
   # Performance: Inline hot function to reduce call overhead
   @compile {:inline, normalize: 1}
 
-  # Fast-path for primitives - return immediately
+  # Fast-path for primitives - return immediately (no allocation)
   def normalize(nil), do: nil
   def normalize(value) when is_boolean(value), do: value
   def normalize(value) when is_binary(value), do: value
@@ -276,7 +276,8 @@ defmodule ToonEx.Utils do
     end
   end
 
-  # Maps: use :maps.fold for direct traversal without intermediate structures
+  # Maps: use :maps.fold for key transformation (to_string) and value normalization
+  # :maps.map/2 cannot transform keys, so we use :maps.fold/3 with accumulator
   def normalize(value) when is_map(value) do
     :maps.fold(
       fn k, v, acc ->

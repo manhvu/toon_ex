@@ -8,8 +8,7 @@ defmodule ToonEx.Encode.Strings do
   alias ToonEx.Constants
 
   # Pre-compiled regex patterns for performance
-  @key_pattern ~r/^[A-Z_][\w.]*$/i
-  @number_pattern ~r/^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i
+  # @number_pattern removed - replaced with binary character range checks in looks_like_number?/1
 
   @doc """
   Encodes a string value, adding quotes if necessary.
@@ -28,12 +27,14 @@ defmodule ToonEx.Encode.Strings do
       iex> ToonEx.Encode.Strings.encode_string("line1\\nline2") |> IO.iodata_to_binary()
       ~s("line1\\\\nline2")
   """
-  @spec encode_string(String.t(), String.t()) :: binary() | nonempty_list(binary())
+  # Performance: Returns binary directly instead of iodata list to reduce memory overhead
+  @spec encode_string(String.t(), String.t()) :: binary()
   def encode_string(string, delimiter \\ ",") when is_binary(string) do
     if safe_unquoted?(string, delimiter) do
       string
     else
-      [Constants.double_quote(), escape_string(string), Constants.double_quote()]
+      # Direct binary construction: "escaped_string"
+      <<?", escape_string(string)::binary, ?">>
     end
   end
 
@@ -62,12 +63,14 @@ defmodule ToonEx.Encode.Strings do
       iex> ToonEx.Encode.Strings.encode_key("123") |> IO.iodata_to_binary()
       ~s("123")
   """
-  @spec encode_key(String.t()) :: String.t() | [String.t(), ...]
+  # Performance: Returns binary directly instead of iodata list
+  @spec encode_key(String.t()) :: binary()
   def encode_key(key) when is_binary(key) do
     if safe_key?(key) do
       key
     else
-      [Constants.double_quote(), escape_string(key), Constants.double_quote()]
+      # Direct binary construction: "escaped_key"
+      <<?", escape_string(key)::binary, ?">>
     end
   end
 
@@ -146,10 +149,29 @@ defmodule ToonEx.Encode.Strings do
       iex> ToonEx.Encode.Strings.safe_key?("123")
       false
   """
+  # Performance: Binary character range checks instead of regex
+  # Matches: ^[A-Za-z_][A-Za-z0-9_.]*$
   @spec safe_key?(String.t()) :: boolean()
-  def safe_key?(key) when is_binary(key) do
-    Regex.match?(@key_pattern, key)
+  def safe_key?(<<first, rest::binary>>) do
+    do_safe_key_first?(first) and do_safe_key_rest?(rest)
   end
+
+  def safe_key?(_), do: false
+
+  # First character: must be A-Z, a-z, or _
+  defp do_safe_key_first?(c) when c in ?A..?Z, do: true
+  defp do_safe_key_first?(c) when c in ?a..?z, do: true
+  defp do_safe_key_first?(?_), do: true
+  defp do_safe_key_first?(_), do: false
+
+  # Remaining characters: A-Z, a-z, 0-9, _, or .
+  defp do_safe_key_rest?(<<>>), do: true
+  defp do_safe_key_rest?(<<c, rest::binary>>) when c in ?A..?Z, do: do_safe_key_rest?(rest)
+  defp do_safe_key_rest?(<<c, rest::binary>>) when c in ?a..?z, do: do_safe_key_rest?(rest)
+  defp do_safe_key_rest?(<<c, rest::binary>>) when c in ?0..?9, do: do_safe_key_rest?(rest)
+  defp do_safe_key_rest?(<<?_, rest::binary>>), do: do_safe_key_rest?(rest)
+  defp do_safe_key_rest?(<<?., rest::binary>>), do: do_safe_key_rest?(rest)
+  defp do_safe_key_rest?(_), do: false
 
   @doc """
   Escapes special characters in a string.
@@ -168,41 +190,46 @@ defmodule ToonEx.Encode.Strings do
   """
   @spec escape_string(String.t()) :: String.t()
   def escape_string(string) when is_binary(string) do
-    do_escape_string(string, [])
+    do_escape_string_binary(string, <<>>)
   end
 
-  # Single-pass binary pattern matching for escaping - avoids 5x String.replace overhead
-  @compile {:inline, do_escape_string: 2}
-  defp do_escape_string(<<>>, acc), do: acc |> :lists.reverse() |> IO.iodata_to_binary()
+  # Performance: Single-pass binary construction - avoids iodata list overhead
+  # Returns binary directly instead of iodata list
+  @compile {:inline, do_escape_string_binary: 2}
+  defp do_escape_string_binary(<<>>, acc), do: acc
 
-  defp do_escape_string(<<?\\, rest::binary>>, acc),
-    do: do_escape_string(rest, ["\\\\" | acc])
+  defp do_escape_string_binary(<<?\\, rest::binary>>, acc),
+    do: do_escape_string_binary(rest, <<acc::binary, 92, 92>>)
 
-  defp do_escape_string(<<?", rest::binary>>, acc),
-    do: do_escape_string(rest, ["\\\"" | acc])
+  defp do_escape_string_binary(<<?", rest::binary>>, acc),
+    do: do_escape_string_binary(rest, <<acc::binary, 92, 34>>)
 
-  defp do_escape_string(<<?\n, rest::binary>>, acc),
-    do: do_escape_string(rest, ["\\n" | acc])
+  defp do_escape_string_binary(<<?\n, rest::binary>>, acc),
+    do: do_escape_string_binary(rest, <<acc::binary, 92, 110>>)
 
-  defp do_escape_string(<<?\r, rest::binary>>, acc),
-    do: do_escape_string(rest, ["\\r" | acc])
+  defp do_escape_string_binary(<<?\r, rest::binary>>, acc),
+    do: do_escape_string_binary(rest, <<acc::binary, 92, 114>>)
 
-  defp do_escape_string(<<?\t, rest::binary>>, acc),
-    do: do_escape_string(rest, ["\\t" | acc])
+  defp do_escape_string_binary(<<?\t, rest::binary>>, acc),
+    do: do_escape_string_binary(rest, <<acc::binary, 92, 116>>)
 
   # Fast-path for ASCII bytes that don't need escaping
-  defp do_escape_string(<<byte, rest::binary>>, acc) when byte < 128,
-    do: do_escape_string(rest, [<<byte>> | acc])
+  defp do_escape_string_binary(<<byte, rest::binary>>, acc) when byte < 128,
+    do: do_escape_string_binary(rest, <<acc::binary, byte>>)
 
-  # Multi-byte UTF-8 characters - copy as-is (they never need escaping per TOON spec)
-  defp do_escape_string(<<byte::utf8, rest::binary>>, acc),
-    do: do_escape_string(rest, [<<byte::utf8>> | acc])
+  # Multi-byte UTF-8 characters (bytes >= 128) - copy as-is (they never need escaping per TOON spec)
+  defp do_escape_string_binary(<<byte, rest::binary>>, acc) when byte >= 128,
+    do: do_escape_string_binary(rest, <<acc::binary, byte>>)
 
   # Private helpers
 
   defp has_leading_or_trailing_space?(string) do
     String.starts_with?(string, " ") or String.ends_with?(string, " ")
   end
+
+  # Performance: Wrapper functions for single-pass binary scans
+  defp contains_structure_chars?(string), do: do_contains_structure_chars?(string)
+  defp contains_control_chars?(string), do: do_contains_control_chars?(string)
 
   # Performance: Binary pattern matching instead of list membership check
   @compile {:inline, literal?: 1}
@@ -211,17 +238,66 @@ defmodule ToonEx.Encode.Strings do
   defp literal?("null"), do: true
   defp literal?(_), do: false
 
+  # Performance: Binary character range checks instead of regex
+  # Matches: /^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i
   defp looks_like_number?(string) do
-    # Per TOON spec Section 7.2: matches /^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i
-    # Uses pre-compiled pattern for performance
-    Regex.match?(@number_pattern, string)
+    do_looks_like_number?(string, :start)
   end
+
+  # State machine for number parsing
+  # :start - optional minus, then digits
+  defp do_looks_like_number?(<<?-, rest::binary>>, :start),
+    do: do_looks_like_number?(rest, :digits)
+
+  defp do_looks_like_number?(<<c, rest::binary>>, :start) when c in ?0..?9,
+    do: do_looks_like_number?(rest, :digits)
+
+  defp do_looks_like_number?(_, :start), do: false
+
+  # :digits - digits, or dot, or exponent
+  defp do_looks_like_number?(<<>>, :digits), do: true
+
+  defp do_looks_like_number?(<<c, rest::binary>>, :digits) when c in ?0..?9,
+    do: do_looks_like_number?(rest, :digits)
+
+  defp do_looks_like_number?(<<?., rest::binary>>, :digits),
+    do: do_looks_like_number?(rest, :frac)
+
+  defp do_looks_like_number?(<<c, rest::binary>>, :digits) when c == ?e or c == ?E,
+    do: do_looks_like_number?(rest, :exp_sign)
+
+  defp do_looks_like_number?(_, :digits), do: false
+
+  # :frac - digits after decimal point, or exponent
+  defp do_looks_like_number?(<<>>, :frac), do: true
+
+  defp do_looks_like_number?(<<c, rest::binary>>, :frac) when c in ?0..?9,
+    do: do_looks_like_number?(rest, :frac)
+
+  defp do_looks_like_number?(<<c, rest::binary>>, :frac) when c == ?e or c == ?E,
+    do: do_looks_like_number?(rest, :exp_sign)
+
+  defp do_looks_like_number?(_, :frac), do: false
+
+  # :exp_sign - optional +/- after exponent, then digits
+  defp do_looks_like_number?(<<c, rest::binary>>, :exp_sign) when c == ?+ or c == ?-,
+    do: do_looks_like_number?(rest, :exp_digits)
+
+  defp do_looks_like_number?(<<c, rest::binary>>, :exp_sign) when c in ?0..?9,
+    do: do_looks_like_number?(rest, :exp_digits)
+
+  defp do_looks_like_number?(_, :exp_sign), do: false
+
+  # :exp_digits - digits after exponent
+  defp do_looks_like_number?(<<>>, :exp_digits), do: true
+
+  defp do_looks_like_number?(<<c, rest::binary>>, :exp_digits) when c in ?0..?9,
+    do: do_looks_like_number?(rest, :exp_digits)
+
+  defp do_looks_like_number?(_, :exp_digits), do: false
 
   # Single-pass binary scan for structure characters - avoids multiple String.contains? calls
-  defp contains_structure_chars?(string) do
-    do_contains_structure_chars?(string)
-  end
-
+  # Performance: Single-pass binary scan for structure characters
   @compile {:inline, do_contains_structure_chars?: 1}
   defp do_contains_structure_chars?(<<>>), do: false
   defp do_contains_structure_chars?(<<?:, _rest::binary>>), do: true
@@ -230,34 +306,24 @@ defmodule ToonEx.Encode.Strings do
   defp do_contains_structure_chars?(<<?{, _rest::binary>>), do: true
   defp do_contains_structure_chars?(<<?}, _rest::binary>>), do: true
   defp do_contains_structure_chars?(<<?(, _rest::binary>>), do: true
-  defp do_contains_structure_chars?(<<?), _rest::binary>>), do: true
+  defp do_contains_structure_chars?(<<41, _rest::binary>>), do: true
   defp do_contains_structure_chars?(<<?", _rest::binary>>), do: true
   defp do_contains_structure_chars?(<<?\\, _rest::binary>>), do: true
-  # Skip ASCII bytes that aren't structure chars
+
   defp do_contains_structure_chars?(<<byte, rest::binary>>) when byte < 128,
     do: do_contains_structure_chars?(rest)
 
-  # Skip multi-byte UTF-8 characters
-  defp do_contains_structure_chars?(<<_byte::utf8, rest::binary>>),
+  defp do_contains_structure_chars?(<<byte, rest::binary>>) when byte >= 128,
     do: do_contains_structure_chars?(rest)
 
-  # Performance: Single-pass binary scan instead of String.contains?
+  # Performance: Use String.contains? which correctly handles variable delimiters
+  # Binary pattern matching with variables doesn't work for value comparison in function heads
   @compile {:inline, contains_delimiter?: 2}
-  defp contains_delimiter?(string, <<delimiter>>) do
-    do_contains_delimiter?(string, delimiter)
+  defp contains_delimiter?(string, delimiter) do
+    String.contains?(string, delimiter)
   end
 
-  defp do_contains_delimiter?(<<>>, _delimiter), do: false
-  defp do_contains_delimiter?(<<delimiter, _rest::binary>>, delimiter), do: true
-
-  defp do_contains_delimiter?(<<_byte, rest::binary>>, delimiter),
-    do: do_contains_delimiter?(rest, delimiter)
-
-  # Single-pass binary scan for control characters - avoids multiple String.contains? calls
-  defp contains_control_chars?(string) do
-    do_contains_control_chars?(string)
-  end
-
+  # Performance: Single-pass binary scan for control characters
   @compile {:inline, do_contains_control_chars?: 1}
   defp do_contains_control_chars?(<<>>), do: false
   defp do_contains_control_chars?(<<?\n, _rest::binary>>), do: true
@@ -265,12 +331,11 @@ defmodule ToonEx.Encode.Strings do
   defp do_contains_control_chars?(<<?\t, _rest::binary>>), do: true
   defp do_contains_control_chars?(<<?\b, _rest::binary>>), do: true
   defp do_contains_control_chars?(<<?\f, _rest::binary>>), do: true
-  # Skip ASCII bytes that aren't control chars
+
   defp do_contains_control_chars?(<<byte, rest::binary>>) when byte < 128,
     do: do_contains_control_chars?(rest)
 
-  # Skip multi-byte UTF-8 characters
-  defp do_contains_control_chars?(<<_byte::utf8, rest::binary>>),
+  defp do_contains_control_chars?(<<byte, rest::binary>>) when byte >= 128,
     do: do_contains_control_chars?(rest)
 
   defp starts_with_hyphen?(string) do
