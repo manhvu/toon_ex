@@ -276,28 +276,24 @@ defmodule ToonEx.Utils do
     end
   end
 
-  # Maps: optimize key conversion and value normalization
+  # Maps: use :maps.fold for direct traversal without intermediate structures
   def normalize(value) when is_map(value) do
-    do_normalize_map(value, %{})
+    :maps.fold(
+      fn k, v, acc ->
+        :maps.put(to_string(k), normalize(v), acc)
+      end,
+      :maps.new(),
+      value
+    )
   end
 
   # Fallback for unsupported types
   def normalize(_value), do: nil
 
   # Tail-recursive list normalization - avoids intermediate list allocations
+  @compile {:inline, do_normalize_list: 2}
   defp do_normalize_list([], acc), do: :lists.reverse(acc)
   defp do_normalize_list([h | t], acc), do: do_normalize_list(t, [normalize(h) | acc])
-
-  # Map normalization with accumulator - avoids comprehension overhead
-  defp do_normalize_map(map, acc) do
-    :maps.fold(
-      fn k, v, acc_map ->
-        Map.put(acc_map, to_string(k), normalize(v))
-      end,
-      acc,
-      map
-    )
-  end
 
   # Private helper to check if a number is finite
   @compile {:inline, is_finite: 1}

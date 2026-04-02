@@ -6,8 +6,18 @@ defmodule ToonEx.Encode do
   encoders based on the type of value being encoded.
   """
 
-  alias ToonEx.{Constants, EncodeError, Utils}
+  alias ToonEx.{EncodeError, Utils}
   alias ToonEx.Encode.{Objects, Options, Arrays, Primitives, Strings}
+
+  # Performance: Direct binary constants to eliminate function call overhead
+  @colon ":"
+  @space " "
+  @open_bracket "["
+  @close_bracket "]"
+  @open_brace "{"
+  @close_brace "}"
+  @list_item_marker "-"
+  @list_item_prefix "- "
 
   @doc """
   Encodes Elixir data to TOON format string.
@@ -139,20 +149,12 @@ defmodule ToonEx.Encode do
   """
   @spec encode!(ToonEx.Types.input(), keyword()) :: String.t()
   def encode!(data, opts \\ []) do
-    # Performance: Skip telemetry overhead in the hot path
-    # Direct implementation without telemetry calls
-    case Options.validate(opts) do
-      {:ok, validated_opts} ->
-        normalized = Utils.normalize(data)
-        encoded = do_encode(normalized, 0, validated_opts)
-        IO.iodata_to_binary(encoded)
+    # Performance: Direct implementation - skip telemetry and error wrapping in hot path
+    validated_opts = Options.validate!(opts)
+    normalized = Utils.normalize(data)
 
-      {:error, error} ->
-        raise EncodeError.exception(
-                message: "Invalid options: #{Exception.message(error)}",
-                reason: error
-              )
-    end
+    do_encode(normalized, 0, validated_opts)
+    |> IO.iodata_to_binary()
   rescue
     e in EncodeError -> raise e
     e -> raise EncodeError.exception(message: Exception.message(e), value: data)
@@ -211,7 +213,7 @@ defmodule ToonEx.Encode do
       # Empty array
       Enum.empty?(data) ->
         length_marker = format_length_marker(0, opts.length_marker)
-        ["[", length_marker, "]:"]
+        [@open_bracket, length_marker, @close_bracket, @colon]
 
       # Inline array (all primitives)
       Utils.all_primitives?(data) ->
@@ -220,7 +222,7 @@ defmodule ToonEx.Encode do
           |> Enum.map(&Primitives.encode(&1, opts.delimiter))
           |> Enum.intersperse(opts.delimiter)
 
-        ["[", length_marker, delimiter_marker, "]: ", values]
+        [@open_bracket, length_marker, delimiter_marker, @close_bracket, @colon, @space, values]
 
       # Tabular array (all maps with same keys and primitive values only)
       Utils.all_maps?(data) and Utils.same_keys?(data) and Utils.all_primitive_values?(data) ->
@@ -256,14 +258,14 @@ defmodule ToonEx.Encode do
     fields = keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(opts.delimiter)
 
     header = [
-      "[",
+      @open_bracket,
       length_marker,
       delimiter_marker,
-      "]",
-      Constants.open_brace(),
+      @close_bracket,
+      @open_brace,
       fields,
-      Constants.close_brace(),
-      Constants.colon()
+      @close_brace,
+      @colon
     ]
 
     # Performance: Combine two Enum.map calls into single pass to reduce intermediate allocations
@@ -285,7 +287,7 @@ defmodule ToonEx.Encode do
 
   # Encode root list array - returns binary with newlines between items, no trailing newline per TOON spec Section 12
   defp encode_root_list_array(data, length_marker, delimiter_marker, _depth, opts) do
-    header = ["[", length_marker, delimiter_marker, "]:"]
+    header = [@open_bracket, length_marker, delimiter_marker, @close_bracket, @colon]
 
     items =
       Enum.flat_map(data, fn item ->
@@ -300,7 +302,7 @@ defmodule ToonEx.Encode do
 
   # Encode a single root list item
   defp encode_root_list_item(item, _depth, _opts) when is_map(item) and map_size(item) == 0 do
-    [[Constants.list_item_marker(), Constants.space()]]
+    [[@list_item_marker, @space]]
   end
 
   defp encode_root_list_item(item, depth, opts) when is_map(item) do
@@ -329,7 +331,7 @@ defmodule ToonEx.Encode do
     # Array item - encode as inline array if all primitives
     cond do
       Enum.empty?(item) ->
-        [[Constants.list_item_marker(), Constants.space(), "[0]:"]]
+        [[@list_item_prefix, "[0]:"]]
 
       Utils.all_primitives?(item) ->
         length_marker = format_length_marker(length(item), opts.length_marker)
@@ -342,14 +344,13 @@ defmodule ToonEx.Encode do
 
         [
           [
-            Constants.list_item_marker(),
-            Constants.space(),
-            "[",
+            @list_item_prefix,
+            @open_bracket,
             length_marker,
             delimiter_marker,
-            "]",
-            Constants.colon(),
-            Constants.space(),
+            @close_bracket,
+            @colon,
+            @space,
             values
           ]
         ]
@@ -360,13 +361,12 @@ defmodule ToonEx.Encode do
         delimiter_marker = format_delimiter_marker(opts.delimiter)
 
         header = [
-          Constants.list_item_marker(),
-          Constants.space(),
-          "[",
+          @list_item_prefix,
+          @open_bracket,
           length_marker,
           delimiter_marker,
-          "]",
-          Constants.colon()
+          @close_bracket,
+          @colon
         ]
 
         # Recursively encode nested items
@@ -386,7 +386,7 @@ defmodule ToonEx.Encode do
 
   defp encode_root_list_item(item, _depth, opts) do
     # Primitive item
-    [[Constants.list_item_marker(), Constants.space(), Primitives.encode(item, opts.delimiter)]]
+    [[@list_item_prefix, Primitives.encode(item, opts.delimiter)]]
   end
 
   # Encode a single entry in root list item
@@ -399,13 +399,13 @@ defmodule ToonEx.Encode do
 
           line = [
             encoded_key,
-            Constants.colon(),
-            Constants.space(),
+            @colon,
+            @space,
             Primitives.encode(v, opts.delimiter)
           ]
 
           if needs_marker do
-            [[Constants.list_item_marker(), Constants.space() | line]]
+            [[@list_item_prefix | line]]
           else
             [[opts.indent_string | line]]
           end
@@ -416,12 +416,12 @@ defmodule ToonEx.Encode do
 
           line = [
             encoded_key,
-            Constants.colon(),
-            Constants.space()
+            @colon,
+            @space
           ]
 
           if needs_marker do
-            [[Constants.list_item_marker(), Constants.space() | line]]
+            [[@list_item_prefix | line]]
           else
             [[opts.indent_string | line]]
           end
@@ -436,12 +436,11 @@ defmodule ToonEx.Encode do
               header =
                 if needs_marker,
                   do: [
-                    Constants.list_item_marker(),
-                    Constants.space(),
+                    @list_item_prefix,
                     encoded_key,
-                    Constants.colon()
+                    @colon
                   ],
-                  else: [opts.indent_string, encoded_key, Constants.colon()]
+                  else: [opts.indent_string, encoded_key, @colon]
 
               # Nested lines from Objects, each indented two extra levels (one for
               # the list item, one for the nested object depth).
@@ -457,7 +456,7 @@ defmodule ToonEx.Encode do
 
               marked_header =
                 if needs_marker,
-                  do: [Constants.list_item_marker(), Constants.space(), header],
+                  do: [@list_item_prefix, header],
                   else: [opts.indent_string, header]
 
               # Both tabular and list arrays need 2 indents when nested inside a list item's map entry
