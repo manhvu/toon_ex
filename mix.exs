@@ -58,8 +58,6 @@ defmodule ToonEx.MixProject do
     [
       # Core dependencies
       {:nimble_parsec, "~> 1.4"},
-      {:nimble_options, "~> 1.1"},
-      {:telemetry, "~> 1.2"},
 
       # Development dependencies
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
@@ -76,8 +74,7 @@ defmodule ToonEx.MixProject do
 
   defp description do
     """
-    TOON encoder/decoder, JSON converter, supported for Phoenix Channels.
-    Forked from https://hex.pm/packages/toon
+    TOON encoder/decoder for Elixir, TOON <--> JSON converter, supported for Phoenix Channels.
     """
   end
 

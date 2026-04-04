@@ -3,6 +3,8 @@ defmodule ToonEx.Decode.Options do
   Validation and normalization of decoding options.
   """
 
+  alias ToonEx.Options.Validator
+
   @options_schema [
     keys: [
       type: {:in, [:strings, :atoms, :atoms!]},
@@ -27,7 +29,7 @@ defmodule ToonEx.Decode.Options do
   ]
 
   @doc """
-  Returns the NimbleOptions schema for decoding options.
+  Returns the options schema.
   """
   @spec schema() :: keyword()
   def schema, do: @options_schema
@@ -46,9 +48,9 @@ defmodule ToonEx.Decode.Options do
       iex> match?({:error, _}, ToonEx.Decode.Options.validate(keys: :invalid))
       true
   """
-  @spec validate(keyword()) :: {:ok, map()} | {:error, NimbleOptions.ValidationError.t()}
+  @spec validate(keyword()) :: {:ok, map()} | {:error, Validator.t()}
   def validate(opts) when is_list(opts) do
-    case NimbleOptions.validate(opts, @options_schema) do
+    case Validator.validate(opts, @options_schema) do
       {:ok, validated} -> {:ok, Map.new(validated)}
       {:error, _} = error -> error
     end

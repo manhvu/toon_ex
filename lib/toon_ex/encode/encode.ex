@@ -45,87 +45,37 @@ defmodule ToonEx.Encode do
   @spec encode(ToonEx.Types.input(), keyword()) ::
           {:ok, String.t()} | {:error, EncodeError.t()}
   def encode(data, opts \\ []) do
-    start_time = System.monotonic_time()
-    metadata = %{data_type: data_type(data)}
-
-    :telemetry.execute(
-      [:toon_ex, :encode, :start],
-      %{system_time: System.system_time()},
-      metadata
-    )
-
-    result =
-      with {:ok, validated_opts} <- Options.validate(opts),
-           {:ok, normalized} <- normalize(data) do
-        try do
-          encoded = do_encode(normalized, 0, validated_opts)
-          {:ok, IO.iodata_to_binary(encoded)}
-        rescue
-          e in EncodeError -> {:error, e}
-          e -> {:error, EncodeError.exception(message: Exception.message(e), value: data)}
-        end
-      else
-        {:error, error} ->
-          {:error,
-           EncodeError.exception(
-             message: "Invalid options: #{Exception.message(error)}",
-             reason: error
-           )}
+    with {:ok, validated_opts} <- Options.validate(opts),
+         {:ok, normalized} <- normalize(data) do
+      try do
+        encoded = do_encode(normalized, 0, validated_opts)
+        {:ok, IO.iodata_to_binary(encoded)}
+      rescue
+        e in EncodeError -> {:error, e}
+        e -> {:error, EncodeError.exception(message: Exception.message(e), value: data)}
       end
-
-    duration = System.monotonic_time() - start_time
-
-    case result do
-      {:ok, encoded} ->
-        :telemetry.execute(
-          [:toon_ex, :encode, :stop],
-          %{duration: duration, size: byte_size(encoded)},
-          metadata
-        )
-
+    else
       {:error, error} ->
-        :telemetry.execute(
-          [:toon_ex, :encode, :exception],
-          %{duration: duration},
-          Map.put(metadata, :error, error)
-        )
+        {:error,
+         EncodeError.exception(
+           message: "Invalid options: #{Exception.message(error)}",
+           reason: error
+         )}
     end
-
-    result
   end
 
   @spec encode_to_iodata!(ToonEx.Types.input(), keyword()) :: iodata()
   def encode_to_iodata!(data, opts \\ []) do
-    start_time = System.monotonic_time()
-    metadata = %{data_type: data_type(data)}
-
-    :telemetry.execute(
-      [:toon_ex, :encode_to_iodata, :start],
-      %{system_time: System.system_time()},
-      metadata
-    )
-
-    result =
-      with {:ok, validated_opts} <- Options.validate(opts),
-           {:ok, normalized} <- normalize(data) do
-        do_encode(normalized, 0, validated_opts)
-      else
-        {:error, error} ->
-          raise EncodeError.exception(
-                  message: "Invalid options: #{Exception.message(error)}",
-                  reason: error
-                )
-      end
-
-    duration = System.monotonic_time() - start_time
-
-    :telemetry.execute(
-      [:toon_ex, :encode_to_iodata, :stop],
-      %{duration: duration},
-      metadata
-    )
-
-    result
+    with {:ok, validated_opts} <- Options.validate(opts),
+         {:ok, normalized} <- normalize(data) do
+      do_encode(normalized, 0, validated_opts)
+    else
+      {:error, error} ->
+        raise EncodeError.exception(
+                message: "Invalid options: #{Exception.message(error)}",
+                reason: error
+              )
+    end
   end
 
   defp data_type(data) when is_map(data), do: :map
@@ -240,8 +190,9 @@ defmodule ToonEx.Encode do
   # Single-pass array type detection
   # State: {all_primitives, all_maps, all_primitive_values, keys, count}
   # Tabular: all maps with same keys and all primitive values
-  defp do_detect_array_type([], {false, true, true, keys, count}) when is_list(keys) and keys != [],
-    do: {:tabular, count, keys}
+  defp do_detect_array_type([], {false, true, true, keys, count})
+       when is_list(keys) and keys != [],
+       do: {:tabular, count, keys}
 
   # Primitive: all primitives (no maps)
   defp do_detect_array_type([], {true, _, _, _, count}),
@@ -279,7 +230,10 @@ defmodule ToonEx.Encode do
         if not h_all_prim do
           do_count_remaining(t, new_count)
         else
-          do_detect_array_type(t, {false, all_maps, all_prim_vals and h_all_prim, new_keys, new_count})
+          do_detect_array_type(
+            t,
+            {false, all_maps, all_prim_vals and h_all_prim, new_keys, new_count}
+          )
         end
 
       # Other element -> list
@@ -333,16 +287,32 @@ defmodule ToonEx.Encode do
 
   # Performance: Tail-recursive binary field builder with braces
   defp do_build_fields_binary([], _delim, acc), do: <<"{", acc::binary, "}">>
-  defp do_build_fields_binary([k], _delim, acc), do: <<"{", acc::binary, Strings.encode_key(k)::binary, "}">>
+
+  defp do_build_fields_binary([k], _delim, acc),
+    do: <<"{", acc::binary, Strings.encode_key(k)::binary, "}">>
+
   defp do_build_fields_binary([k | rest], delim, acc),
-    do: do_build_fields_binary(rest, delim, <<acc::binary, Strings.encode_key(k)::binary, delim::binary>>)
+    do:
+      do_build_fields_binary(
+        rest,
+        delim,
+        <<acc::binary, Strings.encode_key(k)::binary, delim::binary>>
+      )
 
   # Performance: Tail-recursive binary row value builder
   defp do_build_row_binary([], _obj, _delim, acc), do: acc
+
   defp do_build_row_binary([k], obj, delim, acc),
     do: <<acc::binary, Primitives.encode(Map.get(obj, k), delim)::binary>>
+
   defp do_build_row_binary([k | rest], obj, delim, acc),
-    do: do_build_row_binary(rest, obj, delim, <<acc::binary, Primitives.encode(Map.get(obj, k), delim)::binary, delim::binary>>)
+    do:
+      do_build_row_binary(
+        rest,
+        obj,
+        delim,
+        <<acc::binary, Primitives.encode(Map.get(obj, k), delim)::binary, delim::binary>>
+      )
 
   # Encode root list array - returns binary with newlines between items, no trailing newline per TOON spec Section 12
   defp encode_root_list_array(data, length_marker, delimiter_marker, _depth, opts) do

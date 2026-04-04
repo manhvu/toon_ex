@@ -36,60 +36,30 @@ defmodule ToonEx.Decode do
   """
   @spec decode(String.t(), keyword()) :: {:ok, term()} | {:error, DecodeError.t()}
   def decode(string, opts \\ []) when is_binary(string) do
-    start_time = System.monotonic_time()
-    metadata = %{input_size: byte_size(string)}
+    case Options.validate(opts) do
+      {:ok, validated_opts} ->
+        try do
+          decoded = do_decode(string, validated_opts)
+          {:ok, decoded}
+        rescue
+          e in DecodeError ->
+            {:error, e}
 
-    :telemetry.execute(
-      [:toon_ex, :decode, :start],
-      %{system_time: System.system_time()},
-      metadata
-    )
-
-    result =
-      case Options.validate(opts) do
-        {:ok, validated_opts} ->
-          try do
-            decoded = do_decode(string, validated_opts)
-            {:ok, decoded}
-          rescue
-            e in DecodeError ->
-              {:error, e}
-
-            e ->
-              {:error,
-               DecodeError.exception(
-                 message: "Decode failed: #{Exception.message(e)}",
-                 input: string
-               )}
-          end
-
-        {:error, error} ->
-          {:error,
-           DecodeError.exception(
-             message: "Invalid options: #{Exception.message(error)}",
-             reason: error
-           )}
-      end
-
-    duration = System.monotonic_time() - start_time
-
-    case result do
-      {:ok, _decoded} ->
-        :telemetry.execute(
-          [:toon_ex, :decode, :stop],
-          %{duration: duration},
-          metadata
-        )
+          e ->
+            {:error,
+             DecodeError.exception(
+               message: "Decode failed: #{Exception.message(e)}",
+               input: string
+             )}
+        end
 
       {:error, error} ->
-        :telemetry.execute(
-          [:toon_ex, :decode, :exception],
-          %{duration: duration},
-          Map.put(metadata, :error, error)
-        )
+        {:error,
+         DecodeError.exception(
+           message: "Invalid options: #{Exception.message(error)}",
+           reason: error
+         )}
     end
-
-    result
   end
 
   @doc """

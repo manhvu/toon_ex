@@ -4,7 +4,7 @@ defmodule ToonEx.Encode.OptionsTest do
   alias ToonEx.Encode.Options
 
   describe "schema/0" do
-    test "returns the NimbleOptions schema with correct structure" do
+    test "returns the options schema with correct structure" do
       schema = Options.schema()
 
       assert is_list(schema)
@@ -150,7 +150,7 @@ defmodule ToonEx.Encode.OptionsTest do
     end
 
     test "returns error for unknown option" do
-      assert {:error, %NimbleOptions.ValidationError{}} =
+      assert {:error, %ToonEx.Options.Validator{}} =
                Options.validate(unknown_option: "value")
     end
   end

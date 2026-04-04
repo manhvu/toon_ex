@@ -1,9 +1,10 @@
 defmodule ToonEx.Encode.Options do
   @moduledoc """
-  Validation and normalization of encoding options using NimbleOptions.
+  Validation and normalization of encoding options.
   """
 
   alias ToonEx.Constants
+  alias ToonEx.Options.Validator
 
   @typedoc "Validated encoding options"
   @type validated :: %{
@@ -48,7 +49,7 @@ defmodule ToonEx.Encode.Options do
   ]
 
   @doc """
-  Returns the NimbleOptions schema for encoding options.
+  Returns the options schema.
   """
   @spec schema() :: keyword()
   def schema, do: @options_schema
@@ -70,22 +71,20 @@ defmodule ToonEx.Encode.Options do
       iex> match?({:error, _}, ToonEx.Encode.Options.validate(delimiter: "invalid"))
       true
   """
-  @spec validate(keyword()) :: {:ok, map()} | {:error, NimbleOptions.ValidationError.t()}
+  @spec validate(keyword()) :: {:ok, map()} | {:error, Validator.t()}
   def validate(opts) when is_list(opts) do
-    case NimbleOptions.validate(opts, @options_schema) do
+    case Validator.validate(opts, @options_schema) do
       {:ok, validated} ->
         validated_map = Map.new(validated)
 
-        # Additional validation for delimiter
         if valid_delimiter?(validated_map.delimiter) do
-          # Add computed indent_string based on indent value
           validated_with_indent =
             Map.put(validated_map, :indent_string, String.duplicate(" ", validated_map.indent))
 
           {:ok, validated_with_indent}
         else
           {:error,
-           %NimbleOptions.ValidationError{
+           %Validator{
              key: :delimiter,
              value: validated_map.delimiter,
              message:
@@ -116,8 +115,6 @@ defmodule ToonEx.Encode.Options do
       {:error, error} -> raise ArgumentError, Exception.message(error)
     end
   end
-
-  # Private helpers
 
   defp valid_delimiter?(delimiter) do
     delimiter in Constants.valid_delimiters()

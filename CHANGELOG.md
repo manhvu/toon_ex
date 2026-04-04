@@ -78,7 +78,6 @@ Tested against official fixtures from [toon-format/spec@b9c71f7](https://github.
 - Three array formats: inline, tabular, and list
 - `ToonEx.Encoder` protocol for custom struct encoding
 - Comprehensive type specifications with Dialyzer support
-- Telemetry instrumentation for encoding and decoding operations
 - Property-based testing with StreamData
 - Complete documentation with examples
 - Benchmarks comparing TOON vs JSON token efficiency

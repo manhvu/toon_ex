@@ -4,7 +4,7 @@ defmodule ToonEx.Decode.OptionsTest do
   alias ToonEx.Decode.Options
 
   describe "schema/0" do
-    test "returns the NimbleOptions schema with correct structure" do
+    test "returns the options schema with correct structure" do
       schema = Options.schema()
 
       assert is_list(schema)
@@ -102,12 +102,12 @@ defmodule ToonEx.Decode.OptionsTest do
     end
 
     test "returns error for invalid expand_paths option" do
-      assert {:error, %NimbleOptions.ValidationError{key: :expand_paths}} =
+      assert {:error, %ToonEx.Options.Validator{key: :expand_paths}} =
                Options.validate(expand_paths: "invalid")
     end
 
     test "returns error for unknown option" do
-      assert {:error, %NimbleOptions.ValidationError{}} =
+      assert {:error, %ToonEx.Options.Validator{}} =
                Options.validate(unknown_option: "value")
     end
   end
