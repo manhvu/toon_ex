@@ -14,8 +14,6 @@ defmodule ToonEx.Encode do
   @space " "
   @open_bracket "["
   @close_bracket "]"
-  @open_brace "{"
-  @close_brace "}"
   @list_item_marker "-"
   @list_item_prefix "- "
 
@@ -77,14 +75,6 @@ defmodule ToonEx.Encode do
               )
     end
   end
-
-  defp data_type(data) when is_map(data), do: :map
-  defp data_type(data) when is_list(data), do: :list
-  defp data_type(nil), do: :null
-  defp data_type(data) when is_boolean(data), do: :boolean
-  defp data_type(data) when is_number(data), do: :number
-  defp data_type(data) when is_binary(data), do: :string
-  defp data_type(_), do: :unknown
 
   @doc """
   Encodes Elixir data to TOON format string, raising on error.
@@ -269,8 +259,6 @@ defmodule ToonEx.Encode do
           keys
       end
 
-    # Field names in {…} use the active delimiter per TOON spec Section 6.
-    fields = final_keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(opts.delimiter)
     # Build header as binary directly with braces around fields
     fields_bin = do_build_fields_binary(final_keys, opts.delimiter, <<>>)
     header_bin = "[#{length_marker}#{delimiter_marker}]#{fields_bin}:"

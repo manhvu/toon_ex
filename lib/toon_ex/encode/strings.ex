@@ -5,8 +5,6 @@ defmodule ToonEx.Encode.Strings do
   Handles quote detection, escaping, and key validation.
   """
 
-  alias ToonEx.Constants
-
   # Pre-compiled regex patterns for performance
   # @number_pattern removed - replaced with binary character range checks in looks_like_number?/1
 
@@ -331,6 +329,7 @@ defmodule ToonEx.Encode.Strings do
   defp do_contains_control_chars?(<<?\t, _rest::binary>>), do: true
   defp do_contains_control_chars?(<<?\b, _rest::binary>>), do: true
   defp do_contains_control_chars?(<<?\f, _rest::binary>>), do: true
+
 
   defp do_contains_control_chars?(<<byte, rest::binary>>) when byte < 128,
     do: do_contains_control_chars?(rest)

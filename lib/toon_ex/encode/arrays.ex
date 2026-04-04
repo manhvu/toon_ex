@@ -17,27 +17,125 @@ defmodule ToonEx.Encode.Arrays do
   """
   @spec encode(String.t(), list(), non_neg_integer(), map()) :: [iodata()]
   def encode(key, list, depth, opts) when is_list(list) do
-    cond do
-      Enum.empty?(list) ->
-        encode_empty(key, opts.length_marker)
+    # Single-pass array type detection - replaces 6 separate traversals
+    case do_detect_array_type(list, {true, true, true, nil, 0}) do
+      {:primitive, length} ->
+        if length == 0 do
+          encode_empty(key, opts.length_marker)
+        else
+          encode_inline(key, list, opts)
+        end
 
-      Utils.all_primitives?(list) ->
-        encode_inline(key, list, opts)
+      {:tabular, _length, keys} ->
+        encode_tabular_with_keys(key, list, keys, depth, opts)
 
-      Utils.all_maps?(list) and Utils.same_keys?(list) and can_be_tabular?(list) ->
-        encode_tabular(key, list, depth, opts)
-
-      true ->
+      {:list, _length} ->
         encode_list(key, list, depth, opts)
     end
   end
 
-  # Check if array of objects can be encoded in tabular format
-  # Tabular format requires all values to be primitives
-  defp can_be_tabular?(list) do
-    Enum.all?(list, fn obj ->
-      Enum.all?(obj, fn {_k, v} -> Utils.primitive?(v) end)
-    end)
+  # Single-pass array type detection
+  # State: {all_primitives, all_maps, all_primitive_values, keys, count}
+  defp do_detect_array_type([], {false, true, true, keys, count})
+       when is_list(keys) and keys != [],
+       do: {:tabular, count, keys}
+
+  defp do_detect_array_type([], {true, _, _, _, count}),
+    do: {:primitive, count}
+
+  defp do_detect_array_type([], {_, _, _, _, count}),
+    do: {:list, count}
+
+  defp do_detect_array_type([h | t], {all_prim, all_maps, all_prim_vals, keys, count}) do
+    new_count = count + 1
+
+    cond do
+      # Early exit: already determined as list
+      (not all_prim and not all_maps) or (all_maps and not all_prim_vals) ->
+        do_count_remaining(t, new_count)
+
+      # Primitive element - makes it not all-maps
+      is_nil(h) or is_boolean(h) or is_number(h) or is_binary(h) ->
+        do_detect_array_type(t, {all_prim, false, all_prim_vals, nil, new_count})
+
+      # Map element
+      is_map(h) ->
+        h_keys = Map.keys(h) |> Enum.sort()
+        h_all_prim = do_all_values_primitive?(h)
+
+        new_keys =
+          if keys do
+            if h_keys == keys, do: keys, else: nil
+          else
+            h_keys
+          end
+
+        if not h_all_prim do
+          do_count_remaining(t, new_count)
+        else
+          do_detect_array_type(
+            t,
+            {false, all_maps, all_prim_vals and h_all_prim, new_keys, new_count}
+          )
+        end
+
+      # Other element -> list
+      true ->
+        do_count_remaining(t, new_count)
+    end
+  end
+
+  defp do_count_remaining([], count), do: {:list, count}
+  defp do_count_remaining([_ | t], count), do: do_count_remaining(t, count + 1)
+
+  defp do_all_values_primitive?(map) do
+    :maps.fold(fn _k, v, acc -> acc and do_is_primitive?(v) end, true, map)
+  end
+
+  defp do_is_primitive?(v) when is_nil(v) or is_boolean(v) or is_number(v) or is_binary(v),
+    do: true
+
+  defp do_is_primitive?(_), do: false
+
+  # Encode tabular array with pre-computed keys from single-pass detection
+  defp encode_tabular_with_keys(key, list, keys, _depth, opts) do
+    length_marker = format_length_marker(length(list), opts.length_marker)
+    encoded_key = Strings.encode_key(key)
+
+    # Apply key_order if provided
+    final_keys =
+      case Map.get(opts, :key_order) do
+        key_order when is_list(key_order) and key_order != [] ->
+          ordered = Enum.filter(key_order, &(&1 in keys))
+          if length(ordered) == length(keys), do: ordered, else: keys
+
+        _ ->
+          keys
+      end
+
+    fields = final_keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(opts.delimiter)
+    delimiter_marker = format_delimiter_marker(opts.delimiter)
+
+    header = [
+      encoded_key,
+      "[",
+      length_marker,
+      delimiter_marker,
+      "]",
+      Constants.open_brace(),
+      fields,
+      Constants.close_brace(),
+      Constants.colon()
+    ]
+
+    rows =
+      Enum.map(list, fn obj ->
+        final_keys
+        |> Enum.map(fn k -> Primitives.encode(Map.get(obj, k), opts.delimiter) end)
+        |> Enum.intersperse(opts.delimiter)
+      end)
+
+    [header | rows]
   end
 
   @doc """
@@ -110,9 +208,7 @@ defmodule ToonEx.Encode.Arrays do
   """
   @spec encode_tabular(String.t(), list(), non_neg_integer(), map()) :: [iodata()]
   def encode_tabular(key, list, _depth, opts) do
-    length_marker = format_length_marker(length(list), opts.length_marker)
-    encoded_key = Strings.encode_key(key)
-
+    # Extract keys from first map (already known to be tabular from caller)
     keys =
       case list do
         [first | _] ->
@@ -130,31 +226,7 @@ defmodule ToonEx.Encode.Arrays do
           []
       end
 
-    # Field names in {…} use the active delimiter per TOON spec Section 6.
-    fields = keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(opts.delimiter)
-    delimiter_marker = format_delimiter_marker(opts.delimiter)
-
-    header = [
-      encoded_key,
-      "[",
-      length_marker,
-      delimiter_marker,
-      "]",
-      Constants.open_brace(),
-      fields,
-      Constants.close_brace(),
-      Constants.colon()
-    ]
-
-    # Performance: Combine two Enum.map calls into single pass to reduce intermediate allocations
-    rows =
-      Enum.map(list, fn obj ->
-        keys
-        |> Enum.map(fn k -> Primitives.encode(Map.get(obj, k), opts.delimiter) end)
-        |> Enum.intersperse(opts.delimiter)
-      end)
-
-    [header | rows]
+    encode_tabular_with_keys(key, list, keys, 0, opts)
   end
 
   @doc """
@@ -401,38 +473,52 @@ defmodule ToonEx.Encode.Arrays do
   end
 
   # Handle complex arrays (tabular, list, or nested)
+  # Performance: Use single-pass detection instead of re-traversing with tabular_array?/list_array?
   defp encode_complex_array_value(key, v, needs_marker, opts) do
     depth = 0
 
-    cond do
-      tabular_array?(v) ->
-        encode_tabular_array_value(key, v, needs_marker, depth, opts)
+    case do_detect_array_type(v, {false, true, true, nil, 0}) do
+      {:tabular, _length, keys} ->
+        encode_tabular_array_value_with_keys(key, v, keys, needs_marker, depth, opts)
 
-      list_array?(v) ->
+      {:list, _length} ->
         encode_list_array_value(key, v, needs_marker, depth, opts)
 
-      true ->
+      {:primitive, _length} ->
+        # Shouldn't happen for complex arrays, but handle gracefully
         encode_other_array_value(key, v, needs_marker, depth, opts)
     end
   end
 
-  defp tabular_array?(v) do
-    Utils.all_maps?(v) and Utils.same_keys?(v) and
-      Enum.all?(v, fn obj -> Enum.all?(obj, fn {_k, val} -> Utils.primitive?(val) end) end)
-  end
+  # Encode tabular array value with pre-computed keys (avoids re-detection)
+  defp encode_tabular_array_value_with_keys(key, v, keys, needs_marker, _depth, opts) do
+    length_marker = format_length_marker(length(v), opts.length_marker)
+    encoded_key = Strings.encode_key(key)
+    delimiter_marker = format_delimiter_marker(opts.delimiter)
 
-  defp list_array?(v) do
-    Utils.all_maps?(v) and
-      (not Utils.same_keys?(v) or
-         Enum.any?(v, fn obj ->
-           Enum.any?(obj, fn {_k, val} -> not Utils.primitive?(val) end)
-         end))
-  end
+    fields = keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(opts.delimiter)
 
-  defp encode_tabular_array_value(key, v, needs_marker, depth, opts) do
-    [header | data_rows] = encode(key, v, depth + 1, opts)
+    header = [
+      encoded_key,
+      "[",
+      length_marker,
+      delimiter_marker,
+      "]",
+      Constants.open_brace(),
+      fields,
+      Constants.close_brace(),
+      Constants.colon()
+    ]
+
+    rows =
+      Enum.map(v, fn obj ->
+        keys
+        |> Enum.map(fn k -> Primitives.encode(Map.get(obj, k), opts.delimiter) end)
+        |> Enum.intersperse(opts.delimiter)
+      end)
+
     header_line = apply_marker(header, needs_marker, opts)
-    data_lines = Enum.map(data_rows, fn row -> [opts.indent_string, opts.indent_string, row] end)
+    data_lines = Enum.map(rows, fn row -> [opts.indent_string, opts.indent_string, row] end)
     [header_line | data_lines]
   end
 

@@ -279,13 +279,16 @@ defmodule ToonEx.Utils do
   # Maps: use :maps.fold for key transformation (to_string) and value normalization
   # :maps.map/2 cannot transform keys, so we use :maps.fold/3 with accumulator
   def normalize(value) when is_map(value) do
+    # Performance: Use :maps.fold with list accumulator to avoid N intermediate map allocations
+    # Then convert to map once at the end
     :maps.fold(
       fn k, v, acc ->
-        :maps.put(to_string(k), normalize(v), acc)
+        [{to_string(k), normalize(v)} | acc]
       end,
-      :maps.new(),
+      [],
       value
     )
+    |> Map.new()
   end
 
   # Fallback for unsupported types

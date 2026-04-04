@@ -8,8 +8,6 @@ defmodule ToonEx.Decode do
   alias ToonEx.Decode.{Options, StructuralParser}
   alias ToonEx.DecodeError
 
-  @identifier_segment_pattern ~r/^[A-Za-z_][A-Za-z0-9_]*$/
-
   @typedoc "Decoded TOON value"
   @type decoded :: nil | boolean() | binary() | number() | list() | map()
 

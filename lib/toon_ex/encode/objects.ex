@@ -278,15 +278,18 @@ defmodule ToonEx.Encode.Objects do
   end
 
   # Recursively collect the path for folding
+  # Performance: Use accumulator pattern with [next_key | acc] instead of path ++ [next_key]
+  # to avoid O(n²) list concatenation in deep fold chains
+
   # Pattern 1: Not a map - stop folding
   defp collect_fold_path(path, value, _opts, _current_depth) when not is_map(value) do
-    {path, value}
+    {:lists.reverse(path), value}
   end
 
   # Pattern 2: Map with size != 1 - stop folding
   defp collect_fold_path(path, value, _opts, _current_depth)
        when is_map(value) and map_size(value) != 1 do
-    {path, value}
+    {:lists.reverse(path), value}
   end
 
   # Pattern 3: Continue folding if conditions are met
@@ -295,12 +298,12 @@ defmodule ToonEx.Encode.Objects do
       [{next_key, next_value}] = Map.to_list(value)
 
       if valid_identifier_segment?(next_key) do
-        collect_fold_path(path ++ [next_key], next_value, opts, current_depth + 1)
+        collect_fold_path([next_key | path], next_value, opts, current_depth + 1)
       else
-        {path, value}
+        {:lists.reverse(path), value}
       end
     else
-      {path, value}
+      {:lists.reverse(path), value}
     end
   end
 

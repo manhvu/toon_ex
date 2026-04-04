@@ -15,15 +15,7 @@ defmodule ToonEx.Decode.StructuralParser do
   @comma ","
   @tab "\t"
   @pipe "|"
-  @newline "\n"
-  @open_bracket "["
-  @close_bracket "]"
-  @open_brace "{"
-  @close_brace "}"
-  @list_marker "-"
-  @list_prefix "- "
   @double_quote "\""
-  @backslash "\\"
 
   # Performance: Inline hot functions to reduce function call overhead during decoding
   @compile {:inline,
@@ -393,6 +385,32 @@ defmodule ToonEx.Decode.StructuralParser do
     end
   end
 
+  # Performance: Build map directly from parallel field/value lists without intermediate zip
+  defp build_map_from_fields_and_values(fields, values, opts) do
+    case opts.keys do
+      :strings ->
+        :maps.from_list(:lists.zip(fields, values))
+
+      :atoms ->
+        :maps.from_list(
+          :lists.zipwith(
+            fn k, v -> {String.to_atom(k), v} end,
+            fields,
+            values
+          )
+        )
+
+      :atoms! ->
+        :maps.from_list(
+          :lists.zipwith(
+            fn k, v -> {String.to_existing_atom(k), v} end,
+            fields,
+            values
+          )
+        )
+    end
+  end
+
   defp put_key(map, key, value, opts) do
     case opts.keys do
       :strings -> Map.put(map, key, value)
@@ -708,36 +726,34 @@ defmodule ToonEx.Decode.StructuralParser do
   end
 
   # Parse tabular array data rows
+  # Performance: Single-pass processing - filter blanks and parse in one traversal
   defp parse_tabular_data_rows(lines, fields, delimiter, opts) do
-    # Filter out blank lines (validate in strict mode)
-    non_blank_lines =
-      Enum.reject(lines, fn line ->
-        if line.is_blank do
-          if opts.strict do
-            raise DecodeError,
-              message: "Blank lines are not allowed inside arrays in strict mode",
-              input: line.original
-          end
+    field_count = length(fields)
 
-          true
-        else
-          false
+    Enum.reduce(lines, [], fn line, acc ->
+      if line.is_blank do
+        if opts.strict do
+          raise DecodeError,
+            message: "Blank lines are not allowed inside arrays in strict mode",
+            input: line.original
         end
-      end)
 
-    Enum.map(non_blank_lines, fn %{content: row_content} ->
-      values = parse_delimited_values(row_content, delimiter)
+        acc
+      else
+        values = parse_delimited_values(line.content, delimiter)
 
-      if length(values) != length(fields) do
-        raise DecodeError,
-          message: "Row value count mismatch: expected #{length(fields)}, got #{length(values)}",
-          input: row_content
+        if length(values) != field_count do
+          raise DecodeError,
+            message: "Row value count mismatch: expected #{field_count}, got #{length(values)}",
+            input: line.content
+        end
+
+        # Build map directly from zipped fields and values
+        row_map = build_map_from_fields_and_values(fields, values, opts)
+        [row_map | acc]
       end
-
-      # Build object from fields and values using helper
-      entries = Enum.zip(fields, values)
-      build_map_with_keys(entries, opts)
     end)
+    |> :lists.reverse()
   end
 
   # Parse tabular array data (for root arrays)
@@ -1314,11 +1330,50 @@ defmodule ToonEx.Decode.StructuralParser do
   defp do_extract_delimiter(<<_byte, rest::binary>>), do: do_extract_delimiter(rest)
 
   # Parse delimited values from row
+  # Performance: Trim during split instead of separate Enum.map pass
   defp parse_delimited_values(row_str, delimiter) do
     actual_delimiter = detect_delimiter(row_str, delimiter)
+    split_and_parse_values(row_str, actual_delimiter)
+  end
 
-    split_respecting_quotes(row_str, actual_delimiter)
-    |> Enum.map(&parse_value(String.trim(&1)))
+  # Performance: Split and parse in single pass, trimming during split
+  defp split_and_parse_values(str, delimiter) do
+    do_split_and_parse(str, delimiter, [], false, [])
+  end
+
+  defp do_split_and_parse("", _delimiter, current, _in_quote, acc) do
+    current_str =
+      current
+      |> :lists.reverse()
+      |> IO.iodata_to_binary()
+      |> do_trim_leading()
+      |> do_trim_trailing()
+
+    :lists.reverse([parse_value(current_str) | acc])
+  end
+
+  defp do_split_and_parse(<<"\\", char, rest::binary>>, delimiter, current, in_quote, acc) do
+    do_split_and_parse(rest, delimiter, [<<char>>, "\\" | current], in_quote, acc)
+  end
+
+  defp do_split_and_parse(<<"\"", rest::binary>>, delimiter, current, in_quote, acc) do
+    do_split_and_parse(rest, delimiter, ["\"" | current], not in_quote, acc)
+  end
+
+  defp do_split_and_parse(<<char, rest::binary>>, delimiter, current, false, acc)
+       when <<char>> == delimiter do
+    current_str =
+      current
+      |> :lists.reverse()
+      |> IO.iodata_to_binary()
+      |> do_trim_leading()
+      |> do_trim_trailing()
+
+    do_split_and_parse(rest, delimiter, [], false, [parse_value(current_str) | acc])
+  end
+
+  defp do_split_and_parse(<<char, rest::binary>>, delimiter, current, in_quote, acc) do
+    do_split_and_parse(rest, delimiter, [<<char>> | current], in_quote, acc)
   end
 
   # Extract the auto-detect logic so both places that call it stay readable:
