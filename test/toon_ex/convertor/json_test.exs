@@ -137,6 +137,8 @@ defmodule ToonEx.JSONTest do
         {:ok, json2} = ToonEx.JSON.from_toon(toon)
         {:ok, t1} = JSON.decode(json)
         {:ok, t2} = JSON.decode(json2)
+
+        IO.puts("orig: #{json}, toon: #{toon}, json2: #{json2}")
         assert t1 == t2
       end
     end

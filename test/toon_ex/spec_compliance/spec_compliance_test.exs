@@ -675,7 +675,7 @@ defmodule ToonEx.SpecComplianceTest do
     end
   end
 
-    describe "Super complex scenarios" do
+  describe "Super complex scenarios" do
     test "deeply nested structure with mixed array types" do
       # Complex structure with:
       # - Deep nesting (5+ levels)

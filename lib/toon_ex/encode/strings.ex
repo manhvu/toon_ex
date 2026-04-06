@@ -330,7 +330,6 @@ defmodule ToonEx.Encode.Strings do
   defp do_contains_control_chars?(<<?\b, _rest::binary>>), do: true
   defp do_contains_control_chars?(<<?\f, _rest::binary>>), do: true
 
-
   defp do_contains_control_chars?(<<byte, rest::binary>>) when byte < 128,
     do: do_contains_control_chars?(rest)
 

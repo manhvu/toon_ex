@@ -5,7 +5,7 @@ defmodule ToonEx.Decode do
   Parses TOON format strings and converts them to Elixir data structures.
   """
 
-  alias ToonEx.Decode.{Options, StructuralParser}
+  alias ToonEx.Decode.{Options, StructuralParserV2}
   alias ToonEx.DecodeError
 
   @typedoc "Decoded TOON value"
@@ -83,8 +83,8 @@ defmodule ToonEx.Decode do
 
   @spec do_decode(String.t(), map()) :: decoded()
   defp do_decode(string, opts) do
-    # Use structural parser for full TOON support
-    case StructuralParser.parse(string, opts) do
+    # Use optimized structural parser V2 for full TOON support
+    case StructuralParserV2.parse(string, opts) do
       {:ok, {result, metadata}} ->
         # Performance: Skip path expansion entirely when disabled (default case)
         # This avoids unnecessary traversal of the entire result tree
