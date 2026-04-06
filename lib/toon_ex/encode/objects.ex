@@ -7,7 +7,12 @@ defmodule ToonEx.Encode.Objects do
   alias ToonEx.Encode.{Arrays, Primitives, Strings, Writer}
   alias ToonEx.Utils
 
-  @identifier_segment_pattern ~r/^[A-Za-z_][A-Za-z0-9_]*$/
+  # Performance: Inline hot functions to reduce function call overhead
+  @compile {:inline,
+            build_path_prefix: 2,
+            valid_identifier_segment?: 1,
+            flatten_depth_allows?: 2,
+            collect_forbidden_fold_paths: 1}
 
   @doc """
   Encodes a map to TOON format.
@@ -136,11 +141,13 @@ defmodule ToonEx.Encode.Objects do
   end
 
   # Get keys in the correct order based on key_order option
+  # Performance: Use MapSet for O(1) membership checks instead of O(n) list `in` checks
   # Pattern 1: key_order is a map with path-specific ordering
   defp get_ordered_keys(map, key_order, path) when is_map(key_order) do
     case Map.fetch(key_order, path) do
       {:ok, ordered} ->
-        Enum.filter(ordered, &Map.has_key?(map, &1))
+        key_set = MapSet.new(Map.keys(map))
+        Enum.filter(ordered, &MapSet.member?(key_set, &1))
 
       :error ->
         Map.keys(map) |> Enum.sort()
@@ -151,7 +158,8 @@ defmodule ToonEx.Encode.Objects do
   defp get_ordered_keys(map, key_order, [])
        when is_list(key_order) and key_order != [] do
     existing_keys = Map.keys(map)
-    ordered_existing = Enum.filter(key_order, &(&1 in existing_keys))
+    key_set = MapSet.new(existing_keys)
+    ordered_existing = Enum.filter(key_order, &MapSet.member?(key_set, &1))
 
     if length(ordered_existing) == length(existing_keys) do
       ordered_existing
@@ -188,6 +196,33 @@ defmodule ToonEx.Encode.Objects do
   defp encode_regular_entry(writer, key, value, depth, opts) when is_list(value) do
     array_lines = Arrays.encode(key, value, depth, opts)
     append_lines(writer, array_lines, depth)
+  end
+
+  # Fragment — inject pre-encoded iodata directly (Jason-style)
+  # Must come before is_map guard since Fragment is a struct (which is a map).
+  defp encode_regular_entry(writer, key, %ToonEx.Fragment{} = fragment, depth, opts) do
+    encoded_key = Strings.encode_key(key)
+    header = [encoded_key, Constants.colon()]
+    writer = Writer.push(writer, header, depth)
+
+    fragment_iodata = fragment.encode.(opts)
+
+    # Convert fragment iodata to lines and append indented
+    fragment_binary = IO.iodata_to_binary(fragment_iodata)
+
+    if fragment_binary == "" do
+      writer
+    else
+      fragment_lines = String.split(fragment_binary, "\n")
+      indent = opts.indent_string
+
+      indented_lines =
+        Enum.map(fragment_lines, fn line ->
+          [indent, line]
+        end)
+
+      append_lines(writer, indented_lines)
+    end
   end
 
   defp encode_regular_entry(writer, key, value, depth, opts) when is_map(value) do
@@ -257,9 +292,25 @@ defmodule ToonEx.Encode.Objects do
     MapSet.member?(forbidden, full_folded_key)
   end
 
-  defp valid_identifier_segment?(key) do
-    Regex.match?(@identifier_segment_pattern, key)
+  # Performance: Binary pattern matching instead of regex for O(1) check
+  # Matches: ^[A-Za-z_][A-Za-z0-9_]*$
+  defp valid_identifier_segment?(<<first, rest::binary>>) do
+    do_valid_id_first?(first) and do_valid_id_rest?(rest)
   end
+
+  defp valid_identifier_segment?(_), do: false
+
+  defp do_valid_id_first?(c) when c in ?A..?Z, do: true
+  defp do_valid_id_first?(c) when c in ?a..?z, do: true
+  defp do_valid_id_first?(?_), do: true
+  defp do_valid_id_first?(_), do: false
+
+  defp do_valid_id_rest?(<<>>), do: true
+  defp do_valid_id_rest?(<<c, rest::binary>>) when c in ?A..?Z, do: do_valid_id_rest?(rest)
+  defp do_valid_id_rest?(<<c, rest::binary>>) when c in ?a..?z, do: do_valid_id_rest?(rest)
+  defp do_valid_id_rest?(<<c, rest::binary>>) when c in ?0..?9, do: do_valid_id_rest?(rest)
+  defp do_valid_id_rest?(<<?_, rest::binary>>), do: do_valid_id_rest?(rest)
+  defp do_valid_id_rest?(_), do: false
 
   defp flatten_depth_allows?(opts, current_depth) do
     case Map.get(opts, :flatten_depth, :infinity) do

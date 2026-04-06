@@ -29,11 +29,11 @@ defmodule ToonEx.Decode.StructuralParser do
             parse_delimited_values: 2,
             remove_list_marker: 1,
             line_kind: 1,
-            tabular_array_header?: 1,
-            list_array_header?: 1,
-            inline_array_with_values?: 1,
-            list_array_header_only?: 1,
-            empty_list_item_value?: 1}
+            empty_list_item_value?: 1,
+            do_trim_leading: 1,
+            do_trim_trailing: 1,
+            has_decimal_or_exponent?: 1,
+            detect_delimiter: 2}
 
   # Pre-compiled regex patterns for performance - avoids recompilation on every call
   @tabular_array_header_regex ~r/^((?:"[^"]*"|[\w.]+))(\[\d+.*\])\{([^}]+)\}:$/
@@ -608,7 +608,6 @@ defmodule ToonEx.Decode.StructuralParser do
   end
 
   # Pattern matching helpers for handle_special_line
-  @compile {:inline, tabular_array_header?: 1, list_array_header?: 1}
   defp tabular_array_header?(content), do: String.match?(content, @tabular_header_pattern)
   defp list_array_header?(content), do: String.match?(content, @list_header_pattern)
 
@@ -1318,8 +1317,6 @@ defmodule ToonEx.Decode.StructuralParser do
 
   # Extract delimiter from array marker like [2], [2|], [2\t]
   # Performance: Binary pattern matching instead of String.contains?
-  @compile {:inline, extract_delimiter: 1}
-  @compile {:inline, extract_delimiter: 1}
   defp extract_delimiter(array_marker) do
     do_extract_delimiter(array_marker)
   end
@@ -1378,8 +1375,6 @@ defmodule ToonEx.Decode.StructuralParser do
 
   # Extract the auto-detect logic so both places that call it stay readable:
   # Performance: Single-pass binary scan instead of 2x String.contains?
-  @compile {:inline, detect_delimiter: 2}
-  @compile {:inline, detect_delimiter: 2}
   defp detect_delimiter(row_str, @comma) do
     if do_has_tab_no_comma?(row_str), do: @tab, else: @comma
   end
@@ -1430,7 +1425,6 @@ defmodule ToonEx.Decode.StructuralParser do
   end
 
   # Parse a single value - optimized with fast-path for already-clean strings
-  @compile {:inline, parse_value: 1}
   defp parse_value(str) do
     # Fast-path: most tabular values are already clean (no leading/trailing whitespace)
     # Check first and last byte before doing any trimming work
@@ -1454,7 +1448,6 @@ defmodule ToonEx.Decode.StructuralParser do
   end
 
   # Fast-path binary trimming - avoids String.trim overhead
-  @compile {:inline, do_trim_leading: 1, do_trim_trailing: 1}
   defp do_trim_leading(<<?\s, rest::binary>>), do: do_trim_leading(rest)
   defp do_trim_leading(<<?\t, rest::binary>>), do: do_trim_leading(rest)
   defp do_trim_leading(str), do: str
@@ -1496,8 +1489,6 @@ defmodule ToonEx.Decode.StructuralParser do
   end
 
   # Performance: Single-pass binary scan instead of 3x String.contains?
-  @compile {:inline, has_decimal_or_exponent?: 1}
-  @compile {:inline, has_decimal_or_exponent?: 1}
   defp has_decimal_or_exponent?(<<>>), do: false
   defp has_decimal_or_exponent?(<<?., _rest::binary>>), do: true
   defp has_decimal_or_exponent?(<<?e, _rest::binary>>), do: true

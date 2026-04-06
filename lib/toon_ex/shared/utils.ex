@@ -265,6 +265,10 @@ defmodule ToonEx.Utils do
     do_normalize_list(value, [])
   end
 
+  # Fragment - pass through unchanged so do_encode can handle it specially
+  # (avoid converting pre-encoded iodata into a plain binary string)
+  def normalize(%ToonEx.Fragment{} = fragment), do: fragment
+
   # Structs - dispatch to ToonEx.Encoder protocol
   def normalize(%{__struct__: _} = struct) do
     result = ToonEx.Encoder.encode(struct, [])
@@ -298,6 +302,142 @@ defmodule ToonEx.Utils do
   @compile {:inline, do_normalize_list: 2}
   defp do_normalize_list([], acc), do: :lists.reverse(acc)
   defp do_normalize_list([h | t], acc), do: do_normalize_list(t, [normalize(h) | acc])
+
+  @doc """
+  Checks if all values in a map are primitives.
+
+  ## Examples
+
+      iex> ToonEx.Utils.map_values_primitive?(%{"a" => 1, "b" => "x"})
+      true
+
+      iex> ToonEx.Utils.map_values_primitive?(%{"a" => %{"nested" => 1}})
+      false
+
+      iex> ToonEx.Utils.map_values_primitive?(%{})
+      true
+  """
+  @spec map_values_primitive?(map()) :: boolean()
+  @compile {:inline, map_values_primitive?: 1}
+  def map_values_primitive?(map) when is_map(map) do
+    :maps.fold(fn _k, v, acc -> acc and primitive?(v) end, true, map)
+  end
+
+  @doc """
+  Detects the type of an array in a single pass.
+
+  Returns one of:
+    - `{:primitive, count}` - all elements are primitives
+    - `{:tabular, count, keys}` - all elements are maps with same keys and primitive values
+    - `{:list, count}` - mixed or non-uniform array
+
+  ## Examples
+
+      iex> ToonEx.Utils.detect_array_type([1, 2, 3])
+      {:primitive, 3}
+
+      iex> ToonEx.Utils.detect_array_type([%{"a" => 1}, %{"a" => 2}])
+      {:tabular, 2, ["a"]}
+
+      iex> ToonEx.Utils.detect_array_type([1, %{"a" => 1}])
+      {:list, 2}
+  """
+  @spec detect_array_type(list()) ::
+          {:primitive, non_neg_integer()}
+          | {:tabular, non_neg_integer(), [String.t()]}
+          | {:list, non_neg_integer()}
+  def detect_array_type(list) when is_list(list) do
+    do_detect_array_type(list, {true, true, true, nil, 0})
+  end
+
+  # Single-pass array type detection
+  # State: {all_primitives, all_maps, all_primitive_values, keys, count}
+  defp do_detect_array_type([], {false, true, true, keys, count})
+       when is_list(keys) and keys != [],
+       do: {:tabular, count, keys}
+
+  defp do_detect_array_type([], {true, _, _, _, count}),
+    do: {:primitive, count}
+
+  defp do_detect_array_type([], {_, _, _, _, count}),
+    do: {:list, count}
+
+  defp do_detect_array_type([h | t], {all_prim, all_maps, all_prim_vals, keys, count}) do
+    new_count = count + 1
+
+    cond do
+      # Early exit: already determined as list (has both primitives and maps, or maps with non-primitive values)
+      (not all_prim and not all_maps) or (all_maps and not all_prim_vals) ->
+        do_count_remaining(t, new_count)
+
+      # Primitive element - makes it not all-maps
+      primitive?(h) ->
+        do_detect_array_type(t, {all_prim, false, all_prim_vals, nil, new_count})
+
+      # Map element
+      is_map(h) ->
+        h_keys = Map.keys(h) |> Enum.sort()
+        h_all_prim = map_values_primitive?(h)
+
+        new_keys =
+          if keys do
+            if h_keys == keys, do: keys, else: nil
+          else
+            h_keys
+          end
+
+        # If values aren't all primitive, we can early-exit to list
+        if not h_all_prim do
+          do_count_remaining(t, new_count)
+        else
+          do_detect_array_type(
+            t,
+            {false, all_maps, all_prim_vals and h_all_prim, new_keys, new_count}
+          )
+        end
+
+      # Other element -> list
+      true ->
+        do_count_remaining(t, new_count)
+    end
+  end
+
+  defp do_count_remaining([], count), do: {:list, count}
+  defp do_count_remaining([_ | t], count), do: do_count_remaining(t, count + 1)
+
+  @doc """
+  Formats a length marker for arrays.
+
+  ## Examples
+
+      iex> ToonEx.Utils.format_length_marker(5, nil)
+      "5"
+
+      iex> ToonEx.Utils.format_length_marker(5, "n")
+      "n5"
+  """
+  @spec format_length_marker(non_neg_integer(), String.t() | nil) :: String.t()
+  @compile {:inline, format_length_marker: 2}
+  def format_length_marker(length, nil), do: Integer.to_string(length)
+  def format_length_marker(length, marker), do: marker <> Integer.to_string(length)
+
+  @doc """
+  Formats a delimiter marker for arrays.
+
+  Returns empty string for comma delimiter (default), otherwise returns the delimiter.
+
+  ## Examples
+
+      iex> ToonEx.Utils.format_delimiter_marker(",")
+      ""
+
+      iex> ToonEx.Utils.format_delimiter_marker("\\t")
+      "\\t"
+  """
+  @spec format_delimiter_marker(String.t()) :: String.t()
+  @compile {:inline, format_delimiter_marker: 1}
+  def format_delimiter_marker(","), do: ""
+  def format_delimiter_marker(delimiter), do: delimiter
 
   # Private helper to check if a number is finite
   @compile {:inline, is_finite: 1}

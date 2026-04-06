@@ -10,6 +10,18 @@ defmodule ToonEx.Encode.Arrays do
   alias ToonEx.Encode.{Primitives, Strings, Objects}
   alias ToonEx.Utils
 
+  # Performance: Inline hot functions to reduce function call overhead
+  @compile {:inline,
+            do_is_primitive?: 1,
+            do_all_values_primitive?: 1,
+            format_length_marker: 2,
+            apply_marker: 3,
+            build_primitive_line: 3,
+            encode_empty_array_item: 1,
+            encode_primitive_item: 2,
+            format_delimiter_marker: 1,
+            get_ordered_map_keys: 2}
+
   @doc """
   Encodes an array with the given key.
 
@@ -18,7 +30,7 @@ defmodule ToonEx.Encode.Arrays do
   @spec encode(String.t(), list(), non_neg_integer(), map()) :: [iodata()]
   def encode(key, list, depth, opts) when is_list(list) do
     # Single-pass array type detection - replaces 6 separate traversals
-    case do_detect_array_type(list, {true, true, true, nil, 0}) do
+    case do_detect_array_type(list, {true, true, true, nil, 0, false}) do
       {:primitive, length} ->
         if length == 0 do
           encode_empty(key, opts.length_marker)
@@ -35,28 +47,34 @@ defmodule ToonEx.Encode.Arrays do
   end
 
   # Single-pass array type detection
-  # State: {all_primitives, all_maps, all_primitive_values, keys, count}
-  defp do_detect_array_type([], {false, true, true, keys, count})
+  # State: {all_primitives, all_maps, all_primitive_values, keys, count, count_only}
+  # When count_only is true, we just count remaining elements without type checking
+  defp do_detect_array_type([], {false, true, true, keys, count, _count_only})
        when is_list(keys) and keys != [],
        do: {:tabular, count, keys}
 
-  defp do_detect_array_type([], {true, _, _, _, count}),
+  defp do_detect_array_type([], {true, _, _, _, count, _count_only}),
     do: {:primitive, count}
 
-  defp do_detect_array_type([], {_, _, _, _, count}),
+  defp do_detect_array_type([], {_, _, _, _, count, _count_only}),
     do: {:list, count}
 
-  defp do_detect_array_type([h | t], {all_prim, all_maps, all_prim_vals, keys, count}) do
+  # Count-only mode: just count remaining elements (merged from do_count_remaining)
+  defp do_detect_array_type([_ | t], {_, _, _, _, count, true}) do
+    do_detect_array_type(t, {false, false, false, nil, count + 1, true})
+  end
+
+  defp do_detect_array_type([h | t], {all_prim, all_maps, all_prim_vals, keys, count, false}) do
     new_count = count + 1
 
     cond do
-      # Early exit: already determined as list
+      # Early exit: already determined as list - switch to count-only mode
       (not all_prim and not all_maps) or (all_maps and not all_prim_vals) ->
-        do_count_remaining(t, new_count)
+        do_detect_array_type(t, {false, false, false, nil, new_count, true})
 
       # Primitive element - makes it not all-maps
       is_nil(h) or is_boolean(h) or is_number(h) or is_binary(h) ->
-        do_detect_array_type(t, {all_prim, false, all_prim_vals, nil, new_count})
+        do_detect_array_type(t, {all_prim, false, all_prim_vals, nil, new_count, false})
 
       # Map element
       is_map(h) ->
@@ -71,22 +89,19 @@ defmodule ToonEx.Encode.Arrays do
           end
 
         if not h_all_prim do
-          do_count_remaining(t, new_count)
+          do_detect_array_type(t, {false, false, false, nil, new_count, true})
         else
           do_detect_array_type(
             t,
-            {false, all_maps, all_prim_vals and h_all_prim, new_keys, new_count}
+            {false, all_maps, all_prim_vals and h_all_prim, new_keys, new_count, false}
           )
         end
 
       # Other element -> list
       true ->
-        do_count_remaining(t, new_count)
+        do_detect_array_type(t, {false, false, false, nil, new_count, true})
     end
   end
-
-  defp do_count_remaining([], count), do: {:list, count}
-  defp do_count_remaining([_ | t], count), do: do_count_remaining(t, count + 1)
 
   defp do_all_values_primitive?(map) do
     :maps.fold(fn _k, v, acc -> acc and do_is_primitive?(v) end, true, map)
@@ -253,13 +268,22 @@ defmodule ToonEx.Encode.Arrays do
 
     header = [encoded_key, "[", length_marker, delimiter_marker, "]", Constants.colon()]
 
-    items =
-      Enum.flat_map(list, fn item ->
-        encode_list_item(item, depth, opts)
-      end)
-
+    # Performance: Tail-recursive accumulation instead of Enum.flat_map
+    items = do_encode_list_items(list, depth, opts, [])
     [header | items]
   end
+
+  # Tail-recursive helper for encoding list items
+  defp do_encode_list_items([], _depth, _opts, acc), do: :lists.reverse(acc)
+
+  defp do_encode_list_items([item | rest], depth, opts, acc) do
+    encoded = encode_list_item(item, depth, opts)
+    do_encode_list_items(rest, depth, opts, do_prepend_reversed(encoded, acc))
+  end
+
+  # Prepend items from a list in reverse order to accumulator (avoids intermediate list)
+  defp do_prepend_reversed([], acc), do: acc
+  defp do_prepend_reversed([h | t], acc), do: do_prepend_reversed(t, [h | acc])
 
   # Private helpers
 
@@ -350,14 +374,25 @@ defmodule ToonEx.Encode.Arrays do
       Constants.colon()
     ]
 
-    nested_items =
-      Enum.flat_map(item, fn nested_item ->
-        nested = encode_list_item(nested_item, 0, opts)
-        Enum.map(nested, fn line -> [opts.indent_string | line] end)
-      end)
-
-    [header | nested_items]
+    # Performance: Tail-recursive accumulation instead of Enum.flat_map + Enum.map
+    nested_items = do_encode_complex_nested(item, opts, [])
+    [header | :lists.reverse(nested_items)]
   end
+
+  # Tail-recursive helper for encoding complex nested array items
+  defp do_encode_complex_nested([], _opts, acc), do: acc
+
+  defp do_encode_complex_nested([nested_item | rest], opts, acc) do
+    nested = encode_list_item(nested_item, 0, opts)
+    indented = do_prepend_indented(nested, opts.indent_string, acc)
+    do_encode_complex_nested(rest, opts, indented)
+  end
+
+  # Prepend items with indent in reverse order to accumulator
+  defp do_prepend_indented([], _indent, acc), do: acc
+
+  defp do_prepend_indented([line | rest], indent, acc),
+    do: do_prepend_indented(rest, indent, [[indent | line] | acc])
 
   defp encode_primitive_item(item, opts) do
     [
@@ -370,15 +405,25 @@ defmodule ToonEx.Encode.Arrays do
   end
 
   # Helper to get ordered keys for map items
+  # Performance: Use MapSet for O(1) membership checks instead of O(n) list `in` checks
   defp get_ordered_map_keys(item, key_order) do
     map_keys = Map.keys(item)
 
-    if is_list(key_order) and not Enum.empty?(key_order) do
-      ordered_keys = Enum.filter(key_order, &(&1 in map_keys))
-      extra_keys = Enum.filter(map_keys, &(&1 not in key_order)) |> Enum.sort()
-      ordered_keys ++ extra_keys
-    else
-      Enum.sort(map_keys)
+    case key_order do
+      [] ->
+        Enum.sort(map_keys)
+
+      key_order when is_list(key_order) ->
+        key_set = MapSet.new(map_keys)
+        # Single pass through key_order with O(1) lookups
+        ordered = Enum.filter(key_order, &MapSet.member?(key_set, &1))
+        # Single pass through map_keys with O(1) lookups
+        order_set = MapSet.new(key_order)
+        extra = map_keys |> Enum.reject(&MapSet.member?(order_set, &1)) |> Enum.sort()
+        ordered ++ extra
+
+      _ ->
+        Enum.sort(map_keys)
     end
   end
 
@@ -477,7 +522,7 @@ defmodule ToonEx.Encode.Arrays do
   defp encode_complex_array_value(key, v, needs_marker, opts) do
     depth = 0
 
-    case do_detect_array_type(v, {false, true, true, nil, 0}) do
+    case do_detect_array_type(v, {false, true, true, nil, 0, false}) do
       {:tabular, _length, keys} ->
         encode_tabular_array_value_with_keys(key, v, keys, needs_marker, depth, opts)
 

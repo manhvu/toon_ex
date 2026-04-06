@@ -29,11 +29,21 @@ defmodule ToonEx.Decode.StructuralParserV2 do
             parse_delimited_values: 2,
             remove_list_marker: 1,
             line_kind: 1,
-            tabular_array_header?: 1,
-            list_array_header?: 1,
-            inline_array_with_values?: 1,
-            list_array_header_only?: 1,
-            empty_list_item_value?: 1}
+            empty_list_item_value?: 1,
+            build_map_with_keys: 2,
+            build_map_from_fields_and_values: 3,
+            put_key: 4,
+            empty_map: 1,
+            drop_lines_at_level: 2,
+            build_object_with_nested: 4,
+            get_nested_indent: 3,
+            parse_remaining_fields: 2,
+            normalize_parsed_number: 2,
+            normalize_decimal_number: 1,
+            has_decimal_or_exponent?: 1,
+            detect_delimiter: 2,
+            peek_next_indent: 1,
+            get_first_content_indent: 1}
 
   # Pre-compiled regex patterns for performance - avoids recompilation on every call
   @tabular_array_header_regex ~r/^((?:"[^"]*"|[\w.]+))(\[\d+.*\])\{([^}]+)\}:$/
@@ -49,7 +59,7 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   @list_header_pattern ~r/^(?:"[^"]*"|[\w.]+)\[\d+.*\]:$/
   @inline_array_pattern ~r/^\[.*?\]: .+/
   @list_array_header_pattern ~r/^\[\d+[^\]]*\]:$/
-  @field_pattern ~r/^[\w"]+\s*:/
+  @field_pattern ~r/^(?:"(?:[^"\\]|\\.)*"|[\w.-]+)(?:\[[^\]]*\])?\s*:/
   @tabular_header_regex ~r/^((?:"[^"]*"|[\w.]+))(\[\d+.*\])\{([^}]+)\}:$/
   @list_array_regex ~r/^((?:"[^"]*"|[\w.]+))\[(\d+).*\]:$/
 
@@ -100,26 +110,50 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   end
 
   # Preprocess input into line information structures
+  # Jason-style: :binary.split returns plain binaries (no String struct overhead),
+  # tail-recursive preprocessing avoids intermediate Enum.with_index list.
 
   defp preprocess_lines(input) do
     input
-    |> String.split("\n")
-    |> Enum.with_index(1)
-    |> Enum.map(&build_line_info/1)
+    |> :binary.split("\n", [:global])
+    |> do_preprocess_lines([], 1)
     |> drop_trailing_blank()
   end
 
-  defp build_line_info({line, line_num}) do
-    trimmed = String.trim_leading(line)
-    # Indent = bytes trimmed by trim_leading — works for ASCII spaces only,
-    # which is correct (TOON spec: indentation is spaces, not arbitrary whitespace).
-    indent = byte_size(line) - byte_size(trimmed)
-    is_blank = trimmed == "" or String.trim_trailing(trimmed) == ""
+  defp do_preprocess_lines([], acc, _idx), do: :lists.reverse(acc)
+
+  defp do_preprocess_lines([line | rest], acc, idx) do
+    do_preprocess_lines(rest, [build_line_info(line, idx) | acc], idx + 1)
+  end
+
+  # Jason-style: binary pattern matching for leading space counting.
+  # Replaces String.trim_leading (which allocates a new binary) with a
+  # single-pass scan that returns the sub-binary reference and count.
+  # The sub-binary from pattern matching is O(1) — no copy.
+  defp build_line_info(line, line_num) do
+    {trimmed, indent} = trim_leading_spaces(line, 0)
+    # Jason-style: binary scan for blank detection replaces String.trim_trailing
+    # which would allocate a trimmed copy just to check if it's empty.
+    is_blank = trimmed == "" or do_all_whitespace?(trimmed)
     %{content: trimmed, indent: indent, line_number: line_num, original: line, is_blank: is_blank}
   end
 
-  # Avoids the double Enum.reverse of the old "reverse → drop_while → reverse"
-  # approach by finding the last non-blank index in a single forward pass.
+  # Strip leading spaces/tabs and count how many were removed.
+  # Returns {rest_binary, count}.
+  @compile {:inline, trim_leading_spaces: 2}
+  defp trim_leading_spaces(<<?\s, rest::binary>>, count), do: trim_leading_spaces(rest, count + 1)
+  defp trim_leading_spaces(<<?\t, rest::binary>>, count), do: trim_leading_spaces(rest, count + 1)
+  defp trim_leading_spaces(rest, count), do: {rest, count}
+
+  # Check if a binary contains only whitespace (spaces and tabs).
+  # Replaces `String.trim_trailing(str) == ""` to avoid allocating a trimmed copy.
+  @compile {:inline, do_all_whitespace?: 1}
+  defp do_all_whitespace?(<<>>), do: true
+  defp do_all_whitespace?(<<?\s, rest::binary>>), do: do_all_whitespace?(rest)
+  defp do_all_whitespace?(<<?\t, rest::binary>>), do: do_all_whitespace?(rest)
+  defp do_all_whitespace?(_), do: false
+
+  # Drop trailing blank lines by finding the last non-blank index
   defp drop_trailing_blank(lines) do
     last_non_blank =
       lines
@@ -137,15 +171,8 @@ defmodule ToonEx.Decode.StructuralParserV2 do
       # Skip blank lines
       unless line.is_blank do
         # Check for tab characters in INDENTATION only (not in content after the key/value starts)
-        # We need to check the leading whitespace before any content
-        # Find where content starts (first non-whitespace character)
-        leading_whitespace =
-          line.original
-          |> String.to_charlist()
-          |> Enum.take_while(&(&1 == ?\s or &1 == ?\t))
-          |> List.to_string()
-
-        if String.contains?(leading_whitespace, "\t") do
+        # Use binary pattern matching for O(1) check instead of String.to_charlist + Enum.take_while
+        if has_tab_in_leading_whitespace?(line.original) do
           raise DecodeError,
             message: "Tab characters are not allowed in indentation (strict mode)",
             input: line.original
@@ -160,6 +187,14 @@ defmodule ToonEx.Decode.StructuralParserV2 do
       end
     end)
   end
+
+  # Performance: Binary pattern matching to detect tab in leading whitespace - O(1) for space-only, O(n) worst case
+  defp has_tab_in_leading_whitespace?(<<?\t, _rest::binary>>), do: true
+
+  defp has_tab_in_leading_whitespace?(<<?\s, rest::binary>>),
+    do: has_tab_in_leading_whitespace?(rest)
+
+  defp has_tab_in_leading_whitespace?(_), do: false
 
   # Parse a structure starting from given lines at a specific indent level
   defp parse_structure(lines, base_indent, opts, metadata) do
@@ -178,17 +213,15 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   end
 
   # Detect if the root is an array or object or primitive
+  # Performance: Uses pre-compiled module-level regexes instead of inline ~r patterns
   defp detect_root_type([%{content: content} | rest]) do
     cond do
       # Root array header patterns
       String.starts_with?(content, "[") ->
         {:root_array, :inline}
 
-      String.match?(content, ~r/^\[.*\]\{.*\}:/) ->
+      String.match?(content, @root_tabular_array_regex) ->
         {:root_array, :tabular}
-
-      String.match?(content, ~r/^\[.*\]:/) ->
-        {:root_array, :list}
 
       # Single line -> check if it's a primitive or key-value
       rest == [] ->
@@ -196,17 +229,17 @@ defmodule ToonEx.Decode.StructuralParserV2 do
           # Tabular array header key[N]{fields}: ... — must be detected before
           # the generic key-value check because {fields} sits between [N] and ":"
           # and breaks the simpler regex.
-          String.match?(content, ~r/^(?:"[^"]*"|[\w.]+)\[\d+[^\]]*\]\{[^}]+\}:/) ->
+          String.match?(content, @tabular_header_regex) ->
             # Route to :object so parse_entry_line raises DecodeError on the
             # missing / malformed data rows (4 declared, 0 present here).
             {:object, nil}
 
           # List array header key[N]: ... (inline value on header line is also invalid)
-          String.match?(content, ~r/^(?:"[^"]*"|[\w.]+)\[\d+[^\]]*\]:/) ->
+          String.match?(content, @list_array_regex) ->
             {:object, nil}
 
           # Normal key-value pair
-          String.match?(content, ~r/^(?:"(?:[^"\\]|\\.)*"|[\w.-]+)(?:\[[^\]]*\])?:(?:\s|$)/) ->
+          String.match?(content, @field_pattern) ->
             {:object, nil}
 
           true ->
@@ -540,6 +573,7 @@ defmodule ToonEx.Decode.StructuralParserV2 do
                   case String.split(content, ": ", parts: 2) do
                     [_, value_str] ->
                       trimmed_str = String.trim(value_str)
+
                       if trimmed_str == "", do: value, else: parse_value(trimmed_str)
 
                     _ ->
@@ -606,11 +640,6 @@ defmodule ToonEx.Decode.StructuralParserV2 do
         end
     end
   end
-
-  # Pattern matching helpers for handle_special_line
-  @compile {:inline, tabular_array_header?: 1, list_array_header?: 1}
-  defp tabular_array_header?(content), do: String.match?(content, @tabular_header_pattern)
-  defp list_array_header?(content), do: String.match?(content, @list_header_pattern)
 
   defp line_kind(content) do
     cond do
@@ -826,7 +855,7 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   end
 
   # Parse individual list items
-  defp parse_list_items([], _expected_indent, _opts, acc), do: Enum.reverse(acc)
+  defp parse_list_items([], _expected_indent, _opts, acc), do: :lists.reverse(acc)
 
   defp parse_list_items([line | rest], expected_indent, opts, acc) do
     cond do
@@ -865,9 +894,6 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     |> String.replace_prefix("-", "")
   end
 
-  defp inline_array_with_values?(str), do: String.match?(str, @inline_array_pattern)
-  defp list_array_header_only?(str), do: String.match?(str, @list_array_header_pattern)
-
   # Parse a single list item
   defp parse_list_item(%{content: content} = line, rest, expected_indent, opts) do
     trimmed = remove_list_marker(content)
@@ -881,16 +907,16 @@ defmodule ToonEx.Decode.StructuralParserV2 do
       String.trim(trimmed) == "" ->
         {%{}, rest}
 
-      inline_array_with_values?(trimmed) ->
+      String.match?(trimmed, @inline_array_pattern) ->
         parse_inline_array_from_line(trimmed, rest)
 
-      list_array_header_only?(trimmed) ->
+      String.match?(trimmed, @list_array_header_pattern) ->
         parse_nested_list_array(trimmed, rest, line, expected_indent, opts)
 
-      tabular_array_header?(trimmed) ->
+      line_kind(trimmed) == :tabular_array ->
         parse_list_item_with_array(trimmed, rest, line, expected_indent, opts, :tabular)
 
-      list_array_header?(trimmed) ->
+      line_kind(trimmed) == :list_array ->
         parse_list_item_with_array(trimmed, rest, line, expected_indent, opts, :list)
 
       true ->
@@ -1023,7 +1049,7 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   # Only %{} (the empty_kv placeholder) represents "no value supplied".
   # nil (null literal) and "" (explicit quoted empty string) are real values
   # and must NOT trigger the children/sibling disambiguation path.
-  defp empty_list_item_value?(%{} = m) when map_size(m) == 0, do: true
+  defp empty_list_item_value?(value) when is_map(value) and map_size(value) == 0, do: true
   defp empty_list_item_value?(_), do: false
 
   defp handle_parse_error(trimmed, rest, expected_indent, opts) do
@@ -1088,11 +1114,19 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   defp get_nested_indent([], expected_indent, opts),
     do: expected_indent + Map.get(opts, :indent_size, 2)
 
+  defp get_nested_indent([%{indent: indent} | _], _expected_indent, _opts), do: indent
+
   defp get_nested_indent(lines, _expected_indent, _opts),
     do: lines |> Enum.map(& &1.indent) |> Enum.min()
 
   # Helper to parse remaining fields in list item
   defp parse_remaining_fields([], _opts), do: empty_map(nil)
+
+  defp parse_remaining_fields([%{indent: field_indent} | _] = fields, opts) do
+    empty_metadata = %{quoted_keys: MapSet.new(), key_order: []}
+    {result, _} = parse_object_lines(fields, field_indent, opts, empty_metadata)
+    result
+  end
 
   defp parse_remaining_fields(fields, opts) do
     field_indent = fields |> Enum.map(& &1.indent) |> Enum.min()
@@ -1318,8 +1352,6 @@ defmodule ToonEx.Decode.StructuralParserV2 do
 
   # Extract delimiter from array marker like [2], [2|], [2\t]
   # Performance: Binary pattern matching instead of String.contains?
-  @compile {:inline, extract_delimiter: 1}
-  @compile {:inline, extract_delimiter: 1}
   defp extract_delimiter(array_marker) do
     do_extract_delimiter(array_marker)
   end
@@ -1378,8 +1410,6 @@ defmodule ToonEx.Decode.StructuralParserV2 do
 
   # Extract the auto-detect logic so both places that call it stay readable:
   # Performance: Single-pass binary scan instead of 2x String.contains?
-  @compile {:inline, detect_delimiter: 2}
-  @compile {:inline, detect_delimiter: 2}
   defp detect_delimiter(row_str, @comma) do
     if do_has_tab_no_comma?(row_str), do: @tab, else: @comma
   end
@@ -1410,8 +1440,8 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   end
 
   defp do_split_respecting_quotes(<<"\"", rest::binary>>, delimiter, current, in_quote, acc) do
-    # Toggle quote state
-    do_split_respecting_quotes(rest, delimiter, ["\"" | current], not in_quote, acc)
+    # Toggle quote state - don't include the quote character in output
+    do_split_respecting_quotes(rest, delimiter, current, not in_quote, acc)
   end
 
   # NOTE: delimiter must be a single ASCII byte (`,`, `\t`, or `|`).
@@ -1430,7 +1460,6 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   end
 
   # Parse a single value - optimized with fast-path for already-clean strings
-  @compile {:inline, parse_value: 1}
   defp parse_value(str) do
     # Fast-path: most tabular values are already clean (no leading/trailing whitespace)
     # Check first and last byte before doing any trimming work
@@ -1454,12 +1483,28 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   end
 
   # Fast-path binary trimming - avoids String.trim overhead
-  @compile {:inline, do_trim_leading: 1, do_trim_trailing: 1}
   defp do_trim_leading(<<?\s, rest::binary>>), do: do_trim_leading(rest)
   defp do_trim_leading(<<?\t, rest::binary>>), do: do_trim_leading(rest)
   defp do_trim_leading(str), do: str
 
-  defp do_trim_trailing(str), do: String.trim_trailing(str)
+  # Jason-style: binary scan for trailing whitespace instead of String.trim_trailing.
+  # Uses :binary.last/1 (BIF, very fast) to check the last byte, and
+  # binary_part/3 (O(1) sub-binary reference) to shrink the view.
+  # For the common case (no trailing whitespace), this is a single BIF call + return.
+  # For trailing whitespace, each iteration is O(1) — no intermediate allocations.
+  defp do_trim_trailing(str), do: do_trim_trailing(str, byte_size(str))
+
+  defp do_trim_trailing(_str, 0), do: <<>>
+
+  defp do_trim_trailing(str, size) do
+    case :binary.last(str) do
+      byte when byte == ?\s or byte == ?\t ->
+        do_trim_trailing(binary_part(str, 0, size - 1), size - 1)
+
+      _ ->
+        str
+    end
+  end
 
   defp do_parse_value("null"), do: nil
   defp do_parse_value("true"), do: true
@@ -1496,8 +1541,6 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   end
 
   # Performance: Single-pass binary scan instead of 3x String.contains?
-  @compile {:inline, has_decimal_or_exponent?: 1}
-  @compile {:inline, has_decimal_or_exponent?: 1}
   defp has_decimal_or_exponent?(<<>>), do: false
   defp has_decimal_or_exponent?(<<?., _rest::binary>>), do: true
   defp has_decimal_or_exponent?(<<?e, _rest::binary>>), do: true
@@ -1508,17 +1551,43 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   defp normalize_decimal_number(num), do: num
 
   # Remove quotes from key
-  defp unquote_key("\"" <> _ = key) do
-    key |> String.slice(1..-2//1) |> unescape_string()
+  # Jason-style: binary pattern matching instead of String.slice
+  # Strips surrounding quotes in O(1) via binary_part — no allocation.
+  defp unquote_key(<<"\"", rest::binary>>) do
+    case do_strip_trailing_quote(rest) do
+      {:ok, inner} ->
+        unescape_string(inner)
+
+      :error ->
+        raise DecodeError, message: "Unterminated quoted key", input: <<"\"", rest::binary>>
+    end
   end
 
   defp unquote_key(key), do: key
 
-  # Check if a key was originally quoted in the source line
-  defp key_was_quoted?(original_line) do
-    trimmed = String.trim_leading(original_line)
-    String.starts_with?(trimmed, "\"")
+  # Strip trailing quote from a binary, returning {:ok, inner} or :error.
+  defp do_strip_trailing_quote(<<>>), do: :error
+  defp do_strip_trailing_quote(<<"\\">>), do: :error
+  defp do_strip_trailing_quote(<<"\"", _::binary>>), do: :error
+
+  defp do_strip_trailing_quote(binary) do
+    size = byte_size(binary)
+    <<last>> = binary_part(binary, size - 1, 1)
+
+    if last == ?" do
+      {:ok, binary_part(binary, 0, size - 1)}
+    else
+      :error
+    end
   end
+
+  # Check if a key was originally quoted in the source line.
+  # Jason-style: binary pattern matching instead of String.trim_leading + String.starts_with?
+  # Eliminates 2 intermediate allocations.
+  defp key_was_quoted?(<<"\"", _rest::binary>>), do: true
+  defp key_was_quoted?(<<?\s, rest::binary>>), do: key_was_quoted?(rest)
+  defp key_was_quoted?(<<?\t, rest::binary>>), do: key_was_quoted?(rest)
+  defp key_was_quoted?(_), do: false
 
   # Update metadata with a key, checking if it was quoted
   defp add_key_to_metadata(key, was_quoted, metadata) do
@@ -1531,84 +1600,152 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   end
 
   # Remove quotes and unescape string
-  defp unquote_string("\"" <> _ = str) do
-    if properly_quoted?(str) do
-      str |> String.slice(1..-2//1) |> unescape_string()
+  # Jason-style: binary_part instead of String.slice — O(1) sub-binary reference, no copy.
+  # Also avoids reconstructing the full quoted string for properly_quoted? by
+  # passing the already-matched parts directly.
+  defp unquote_string(<<"\"", rest::binary>>) do
+    if do_ends_with_unescaped_quote?(rest) do
+      # binary_part creates a sub-binary reference (O(1)), no allocation
+      inner = binary_part(rest, 0, byte_size(rest) - 1)
+      unescape_string(inner)
     else
-      raise DecodeError, message: "Unterminated string", input: str
+      raise DecodeError, message: "Unterminated string", input: <<"\"", rest::binary>>
     end
   end
 
   defp unquote_string(str), do: str
 
-  # Check if a quoted string is properly terminated
-  # The string should start and end with " and the ending " should not be escaped
-  defp properly_quoted?(str) when byte_size(str) < 2, do: false
+  # Check if a binary (without leading quote) ends with an unescaped quote.
+  # Single-pass: scan from end, count trailing backslashes, check for quote.
+  defp do_ends_with_unescaped_quote?(<<>>), do: false
+  defp do_ends_with_unescaped_quote?(<<"\\">>), do: false
 
-  defp properly_quoted?("\"" <> _ = str) do
-    String.ends_with?(str, "\"") and not escaped_quote_at_end?(str)
+  defp do_ends_with_unescaped_quote?(binary) do
+    size = byte_size(binary)
+    <<last>> = binary_part(binary, size - 1, 1)
+
+    case last do
+      ?" ->
+        # Ends with quote — check if it's escaped
+        not escaped_quote_at_end?(binary)
+
+      ?\\ ->
+        # Ends with backslash — not a valid closing
+        false
+
+      _ ->
+        false
+    end
   end
 
-  defp properly_quoted?(_), do: false
-
-  # Check if the closing quote is escaped
+  # Check if the closing quote is escaped.
+  # Jason-style: single-pass binary scan from the end instead of
+  # String.slice → String.reverse → String.to_charlist → Enum.take_while → length
+  # (5 intermediate allocations → 0 allocations).
   defp escaped_quote_at_end?(str) do
-    # Count consecutive backslashes before the final quote
-    # If odd number, the quote is escaped; if even, it's not
+    # Strip the trailing quote, then count consecutive backslashes from the end
     str
-    # Remove final quote
-    |> String.slice(0..-2//1)
-    |> String.reverse()
-    |> String.to_charlist()
-    |> Enum.take_while(&(&1 == ?\\))
-    |> length()
-    # Odd number means escaped
+    |> binary_part(0, byte_size(str) - 1)
+    |> do_count_trailing_backslashes()
     |> rem(2) == 1
   end
 
-  defp unescape_string(str), do: do_unescape(str, [])
+  # Count consecutive backslashes from the end of a binary.
+  # Single-pass scan — no intermediate allocations.
+  defp do_count_trailing_backslashes(<<>>), do: 0
+  defp do_count_trailing_backslashes(<<last>>) when last == ?\\, do: 1
+  defp do_count_trailing_backslashes(<<_last>>), do: 0
+  defp do_count_trailing_backslashes(<<byte, _rest::binary>>) when byte != ?\\, do: 0
 
-  defp do_unescape(<<>>, acc),
-    do: acc |> :lists.reverse() |> IO.iodata_to_binary()
+  defp do_count_trailing_backslashes(binary) do
+    size = byte_size(binary)
+    <<last>> = binary_part(binary, size - 1, 1)
 
-  defp do_unescape(<<"\\", char, rest::binary>>, acc) do
-    replacement =
-      case char do
-        ?\\ ->
-          "\\"
-
-        ?" ->
-          "\""
-
-        ?n ->
-          "\n"
-
-        ?r ->
-          "\r"
-
-        ?t ->
-          "\t"
-
-        _ ->
-          raise DecodeError,
-            message: "Invalid escape sequence: \\#{<<char>>}",
-            input: <<?\\, char>>
-      end
-
-    do_unescape(rest, [replacement | acc])
+    if last == ?\\ do
+      1 + do_count_trailing_backslashes(binary_part(binary, 0, size - 1))
+    else
+      0
+    end
   end
 
-  # Lone trailing backslash (malformed input)
-  defp do_unescape(<<"\\">>, _acc),
+  # Jason-style chunk-based unescaping with binary_part/3.
+  # Instead of wrapping every single byte in a list element (`[<<byte>> | acc]`),
+  # this uses two mutually recursive functions:
+  #
+  #   do_unescape/4      — main loop, scans for backslash
+  #   do_unescape_chunk/5 — accumulates consecutive safe bytes into a chunk
+  #
+  # When a backslash is found, the accumulated safe chunk is flushed via
+  # `binary_part(original, skip, len)` which is O(1) — it creates a sub-binary
+  # reference without copying. Only the escape replacement sequences are newly
+  # allocated. For strings with few escapes (the common case), this dramatically
+  # reduces the number of list elements and avoids per-byte allocation.
+  defp unescape_string(str), do: do_unescape(str, str, 0, [])
+
+  # Main loop: scan for backslash or end of input
+  defp do_unescape(<<>>, original, skip, acc),
+    do: finalize_unescape(acc, original, skip, 0)
+
+  defp do_unescape(<<"\\">>, _original, _skip, _acc),
     do: raise(DecodeError, message: "Unterminated escape sequence", input: "\\")
 
-  # NOTE: Matches one BYTE at a time.  Valid for all ASCII content and for the
-  # non-ASCII bytes of multibyte UTF-8 sequences (their high bytes are all ≥ 0x80
-  # and cannot equal any ASCII special character, so this is safe).
-  defp do_unescape(<<byte, rest::binary>>, acc),
-    do: do_unescape(rest, [<<byte>> | acc])
+  defp do_unescape(<<"\\", char, rest::binary>>, original, skip, acc) do
+    # Flush any accumulated safe chunk, then append escape replacement
+    acc = flush_unescape_chunk(acc, original, skip, 0)
+    replacement = escape_char(char)
+    do_unescape(rest, original, skip + 2, [replacement | acc])
+  end
+
+  # Safe byte — enter chunk accumulation mode
+  defp do_unescape(<<_byte, rest::binary>>, original, skip, acc),
+    do: do_unescape_chunk(rest, original, skip, 1, acc)
+
+  # Chunk accumulation: count consecutive safe bytes without allocating
+  defp do_unescape_chunk(<<>>, original, skip, len, acc),
+    do: finalize_unescape([binary_part(original, skip, len) | acc], original, skip, 0)
+
+  defp do_unescape_chunk(<<"\\">>, _original, _skip, _len, _acc),
+    do: raise(DecodeError, message: "Unterminated escape sequence", input: "\\")
+
+  defp do_unescape_chunk(<<"\\", char, rest::binary>>, original, skip, len, acc) do
+    # Flush chunk via binary_part (O(1)), then append escape replacement
+    part = binary_part(original, skip, len)
+    replacement = escape_char(char)
+    do_unescape(rest, original, skip + len + 2, [replacement, part | acc])
+  end
+
+  defp do_unescape_chunk(<<_byte, rest::binary>>, original, skip, len, acc),
+    do: do_unescape_chunk(rest, original, skip, len + 1, acc)
+
+  # Flush a zero-length chunk (no-op) — avoids unnecessary binary_part call
+  @compile {:inline, flush_unescape_chunk: 4}
+  defp flush_unescape_chunk(acc, _original, _skip, 0), do: acc
+
+  defp flush_unescape_chunk(acc, original, skip, len),
+    do: [binary_part(original, skip, len) | acc]
+
+  # Final assembly: reverse the iodata list and convert to binary
+  @compile {:inline, finalize_unescape: 4}
+  defp finalize_unescape(acc, _original, _skip, 0),
+    do: acc |> :lists.reverse() |> IO.iodata_to_binary()
+
+  defp finalize_unescape(acc, original, skip, len),
+    do: [binary_part(original, skip, len) | acc] |> :lists.reverse() |> IO.iodata_to_binary()
+
+  # Escape character lookup — inlined for zero-overhead dispatch
+  defp escape_char(?\\), do: "\\"
+  defp escape_char(?"), do: "\""
+  defp escape_char(?n), do: "\n"
+  defp escape_char(?r), do: "\r"
+  defp escape_char(?t), do: "\t"
+
+  defp escape_char(char),
+    do:
+      raise(DecodeError, message: "Invalid escape sequence: \\#{<<char>>}", input: <<?\\, char>>)
 
   # Peek at next line's indent (skip blank lines)
+  # Note: get_first_content_indent/1 shares the same logic but is kept separate
+  # for semantic clarity - both are inlined for performance
   defp peek_next_indent([]), do: 0
   defp peek_next_indent([%{is_blank: true} | rest]), do: peek_next_indent(rest)
   defp peek_next_indent([%{indent: indent} | _]), do: indent

@@ -12,6 +12,8 @@ defmodule ToonEx do
   - **Three Array Formats**: Inline, tabular, and list formats
   - **Type Safe**: Full Dialyzer support with comprehensive typespecs
   - **Protocol Support**: Custom encoding via `ToonEx.Encoder` protocol
+  - **Fragment Support**: Inject pre-encoded TOON via `ToonEx.Fragment`
+  - **Compile-time Helpers**: Partial compile-time encoding via `ToonEx.Helpers`
 
   ## Quick Start
 
@@ -48,7 +50,26 @@ defmodule ToonEx do
     * `:indent_size` - Expected indentation size in spaces (default: 2)
     * `:expand_paths` - Path expansion mode: `"off"` | `"safe"` (default: `"off"`)
 
-  ## Custom Encoding
+  ### Fragment Encoding
+
+  You can inject pre-encoded TOON data using `ToonEx.Fragment` to avoid
+  decode/encode round-trips (e.g., for cached or externally-generated TOON):
+
+      fragment = ToonEx.Fragment.new("name: Alice\\nage: 30")
+      ToonEx.encode!(%{"user" => fragment})
+      #=> "user:\\n  name: Alice\\n  age: 30"
+
+  ### Compile-time Encoding
+
+  `ToonEx.Helpers` provides macros for partial compile-time encoding,
+  where keys are validated and encoded at compile time:
+
+      require ToonEx.Helpers
+      fragment = ToonEx.Helpers.toon_map(name: "Alice", age: 30)
+      ToonEx.encode!(fragment)
+      #=> "age: 30\\nname: Alice"
+
+  ### Custom Encoding
 
   You can implement the `ToonEx.Encoder` protocol for your structs:
 

@@ -4,6 +4,15 @@ defmodule ToonEx.Constants do
 
   This module defines all the string literals, delimiters, and special
   characters used in the TOON format.
+
+  ## Performance
+
+  Constants are defined as module attributes and exposed via `@compile {:inline}`
+  functions. This allows the compiler to inline constant access at call sites,
+  avoiding function call overhead in the hot encoding path.
+
+  For use in `@compile {:inline}` contexts, the attribute values can be referenced
+  directly via the zero-arity functions, which the compiler will inline.
   """
 
   # List markers
@@ -64,7 +73,39 @@ defmodule ToonEx.Constants do
   # Default options
   @default_indent 2
 
-  # Public API
+  # All public accessor functions are inlined for zero-overhead constant access.
+  # The compiler replaces each call with the literal value.
+  @compile {:inline,
+            list_item_marker: 0,
+            list_item_prefix: 0,
+            colon: 0,
+            comma: 0,
+            space: 0,
+            pipe: 0,
+            tab: 0,
+            newline: 0,
+            open_bracket: 0,
+            close_bracket: 0,
+            open_brace: 0,
+            close_brace: 0,
+            open_paren: 0,
+            close_paren: 0,
+            double_quote: 0,
+            backslash: 0,
+            null_literal: 0,
+            true_literal: 0,
+            false_literal: 0,
+            escape_sequences: 0,
+            unescape_sequences: 0,
+            delimiters: 0,
+            default_delimiter: 0,
+            default_indent: 0,
+            valid_delimiters: 0,
+            valid_delimiter?: 1,
+            structure_chars: 0,
+            control_chars: 0}
+
+  # Public API — all inlined by the compiler
   def list_item_marker, do: @list_item_marker
   def list_item_prefix, do: @list_item_prefix
   def colon, do: @colon
@@ -111,7 +152,6 @@ defmodule ToonEx.Constants do
   def structure_chars do
     [
       @colon,
-      # @comma - NOT included, checked separately based on delimiter
       @open_bracket,
       @close_bracket,
       @open_brace,
