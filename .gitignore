@@ -27,3 +27,4 @@ toon-*.tar
 /priv/plts/*.plt.hash
 
 .DS_Store
+.expert

@@ -10,9 +10,9 @@ TOON is a compact, human-readable data format optimized for LLM token efficiency
 
 ## Features
 
-- 🎯 **Token Efficient**: 30-60% fewer tokens than JSON
+- 🎯 **Token Efficient**: 30-60% fewer tokens for LLMs than JSON
 - 📖 **Human Readable**: Indentation-based structure like YAML
-- ✅ **Spec Compliant**: Tested against official TOON v1.3 specification (306 tests)
+- ✅ **Spec Compliant**: Tested against official TOON v3.0 specification
 - 🔌 **Phoenix Channels**: Built-in serializer support
 - 🛠️ **JSON Converter**: Bidirectional JSON ↔ TOON conversion
 - 🔧 **Extensible**: Custom encoding via `ToonEx.Encoder` protocol
@@ -24,7 +24,7 @@ Add `toon_ex` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:toon_ex, "~> 0.5"}
+    {:toon_ex, "~> 0.8"}
   ]
 end
 ```
@@ -34,17 +34,13 @@ end
 ### Encoding
 
 ```elixir
-# Simple object
-ToonEx.encode!(%{"name" => "Alice", "age" => 30})
-# => "age: 30\nname: Alice"
-
 # Nested object
 ToonEx.encode!(%{"user" => %{"name" => "Bob"}})
 # => "user:\n  name: Bob"
 
 # Arrays
-ToonEx.encode!(%{"tags" => ["elixir", "toon"]})
-# => "tags[2]: elixir,toon"
+ToonEx.encode!(["elixir", "toon"])
+# => "[2]: elixir,toon"
 ```
 
 ### Decoding
@@ -55,10 +51,6 @@ ToonEx.decode!("name: Alice\nage: 30")
 
 ToonEx.decode!("tags[2]: a,b")
 # => %{"tags" => ["a", "b"]}
-
-# Atom keys
-ToonEx.decode!("name: Alice", keys: :atoms)
-# => %{name: "Alice"}
 ```
 
 ### Phoenix Channels
@@ -67,8 +59,14 @@ ToonEx.decode!("name: Alice", keys: :atoms)
 # In your endpoint configuration
 config :my_app, MyApp.Endpoint,
   websocket: [
-    serializer: [{ToonEx.Phoenix.Serializer, "~> 1.0"}]
+    serializer: [{ToonEx.Phoenix.Serializer, "~> 2.0.0"}]
   ]
+```
+
+Or (if not using Phoenix for LiveView/Restful Apis)
+
+```elixir
+config :phoenix, :json_library, ToonEx
 ```
 
 See `ToonEx.Phoenix.Serializer` for details.
@@ -82,18 +80,6 @@ See `ToonEx.Phoenix.Serializer` for details.
 - `ToonEx.decode/2` - Decode TOON string to data (returns `{:ok, data} | {:error, error}`)
 - `ToonEx.decode!/2` - Decode TOON string to data (raises on error)
 
-### Encoding Options
-
-- `:indent` - Spaces for indentation (default: `2`)
-- `:delimiter` - Array value delimiter: `","` | `"\t"` | `"|"` (default: `","`)
-- `:length_marker` - Length marker prefix (default: `nil`)
-
-### Decoding Options
-
-- `:keys` - Map key type: `:strings` | `:atoms` | `:atoms!` (default: `:strings`)
-- `:indent_size` - Expected indentation size (default: `2`)
-- `:strict` - Strict mode validation (default: `true`)
-
 ## Modules
 
 - **ToonEx** - Main API
@@ -105,7 +91,7 @@ See `ToonEx.Phoenix.Serializer` for details.
 
 ## Specification
 
-This implementation follows [TOON Specification v1.3](https://github.com/toon-format/spec/blob/main/SPEC.md) and is tested against official fixtures.
+This implementation follows [TOON Specification v3.0](https://github.com/toon-format/spec/blob/main/SPEC.md) and is tested against official fixtures.
 
 ## Testing
 
