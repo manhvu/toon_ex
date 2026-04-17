@@ -47,7 +47,10 @@ defmodule ToonEx.Encode.Writer do
     do: do_build_iodata(rest, newline, [newline, line | acc])
 
   @spec to_string(t()) :: String.t()
-  def to_string(%__MODULE__{} = w), do: w |> to_lines() |> Enum.join("\n")
+  # Performance: Use to_iodata/1 which already builds the iolist tree with
+  # newlines interspersed, then convert to binary once at the boundary.
+  # This avoids Enum.join("\n") which creates intermediate binary strings.
+  def to_string(%__MODULE__{} = w), do: IO.iodata_to_binary(to_iodata(w))
 
   def line_count(%__MODULE__{lines: lines}), do: length(lines)
   def empty?(%__MODULE__{lines: []}), do: true

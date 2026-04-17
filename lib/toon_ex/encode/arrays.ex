@@ -6,9 +6,25 @@ defmodule ToonEx.Encode.Arrays do
   - List: for mixed or non-uniform arrays
   """
 
-  alias ToonEx.Constants
   alias ToonEx.Encode.{Primitives, Strings, Objects}
   alias ToonEx.Utils
+
+  # Performance: Module attributes are compile-time constants with zero runtime overhead.
+  # Replaces Constants.*() function calls in hot encoding paths.
+  @colon ":"
+
+  @open_bracket "["
+  @close_bracket "]"
+  @open_brace "{"
+  @close_brace "}"
+  @list_item_marker "-"
+  @list_item_prefix "- "
+  @null_literal "null"
+
+  # Performance: Pre-computed iodata fragments for hot paths.
+  # Avoids rebuilding the same list structure on every call.
+  @colon_space [":", " "]
+  @bracket_close_colon ["]", ":"]
 
   # Performance: Inline hot functions to reduce function call overhead
   @compile {:inline,
@@ -20,7 +36,19 @@ defmodule ToonEx.Encode.Arrays do
             encode_empty_array_item: 1,
             encode_primitive_item: 2,
             format_delimiter_marker: 1,
-            get_ordered_map_keys: 2}
+            get_ordered_map_keys: 2,
+            encode_list_item: 3,
+            encode_map_entry_with_marker: 5,
+            encode_value_with_optional_marker: 5,
+            build_empty_array_line: 2,
+            build_inline_array_line: 3,
+            encode_complex_array_item: 2,
+            encode_inline_array_item: 2,
+            do_intersperse_map: 4,
+            do_prepend_reversed: 2,
+            do_prepend_indented: 3,
+            do_encode_complex_nested: 3,
+            do_encode_list_items: 4}
 
   @doc """
   Encodes an array with the given key.
@@ -128,26 +156,29 @@ defmodule ToonEx.Encode.Arrays do
           keys
       end
 
-    fields = final_keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(opts.delimiter)
+    fields = do_intersperse_map(final_keys, &Strings.encode_key/1, opts.delimiter, [])
     delimiter_marker = format_delimiter_marker(opts.delimiter)
 
     header = [
       encoded_key,
-      "[",
+      @open_bracket,
       length_marker,
       delimiter_marker,
-      "]",
-      Constants.open_brace(),
+      @close_bracket,
+      @open_brace,
       fields,
-      Constants.close_brace(),
-      Constants.colon()
+      @close_brace,
+      @colon
     ]
 
     rows =
       Enum.map(list, fn obj ->
-        final_keys
-        |> Enum.map(fn k -> Primitives.encode(Map.get(obj, k), opts.delimiter) end)
-        |> Enum.intersperse(opts.delimiter)
+        do_intersperse_map(
+          final_keys,
+          fn k -> Primitives.encode(Map.get(obj, k), opts.delimiter) end,
+          opts.delimiter,
+          []
+        )
       end)
 
     [header | rows]
@@ -166,7 +197,7 @@ defmodule ToonEx.Encode.Arrays do
           nonempty_list(nonempty_list(binary() | nonempty_list(binary())))
   def encode_empty(key, length_marker \\ nil) do
     marker = format_length_marker(0, length_marker)
-    [[Strings.encode_key(key), "[", marker, "]", Constants.colon()]]
+    [[Strings.encode_key(key), @open_bracket, marker, @bracket_close_colon]]
   end
 
   @doc """
@@ -184,22 +215,18 @@ defmodule ToonEx.Encode.Arrays do
     length_marker = format_length_marker(length(list), opts.length_marker)
     encoded_key = Strings.encode_key(key)
 
-    values =
-      list
-      |> Enum.map(&Primitives.encode(&1, opts.delimiter))
-      |> Enum.intersperse(opts.delimiter)
+    values = do_intersperse_map(list, &Primitives.encode(&1, opts.delimiter), opts.delimiter, [])
 
     # Include delimiter marker in header per TOON spec Section 6
     delimiter_marker = format_delimiter_marker(opts.delimiter)
 
     header = [
       encoded_key,
-      "[",
+      @open_bracket,
       length_marker,
       delimiter_marker,
-      "]",
-      Constants.colon(),
-      Constants.space()
+      @close_bracket,
+      @colon_space
     ]
 
     [[header, values]]
@@ -266,7 +293,7 @@ defmodule ToonEx.Encode.Arrays do
     encoded_key = Strings.encode_key(key)
     delimiter_marker = format_delimiter_marker(opts.delimiter)
 
-    header = [encoded_key, "[", length_marker, delimiter_marker, "]", Constants.colon()]
+    header = [encoded_key, @open_bracket, length_marker, delimiter_marker, @close_bracket, @colon]
 
     # Performance: Tail-recursive accumulation instead of Enum.flat_map
     items = do_encode_list_items(list, depth, opts, [])
@@ -288,16 +315,30 @@ defmodule ToonEx.Encode.Arrays do
   # Private helpers
 
   defp format_length_marker(length, nil), do: Integer.to_string(length)
-  defp format_length_marker(length, marker), do: marker <> Integer.to_string(length)
+
+  # Performance: Return iolist instead of binary concatenation (marker <> Integer.to_string(length)).
+  # The iolist [marker, Integer.to_string(length)] avoids allocating a new binary and copying
+  # both strings into it. The final IO.iodata_to_binary at the top-level encoder flattens
+  # everything in one pass, so nested iolists are free.
+  defp format_length_marker(length, marker), do: [marker, Integer.to_string(length)]
 
   @compile {:inline, format_delimiter_marker: 1}
   defp format_delimiter_marker(","), do: ""
   defp format_delimiter_marker(delimiter), do: delimiter
 
+  # Performance: Single-pass map+intersperse — avoids two intermediate lists
+  # from Enum.map + Enum.intersperse. Builds iolist directly.
+  @compile {:inline, do_intersperse_map: 4}
+  defp do_intersperse_map([], _fun, _sep, acc), do: :lists.reverse(acc)
+  defp do_intersperse_map([last], fun, _sep, acc), do: :lists.reverse([fun.(last) | acc])
+
+  defp do_intersperse_map([h | t], fun, sep, acc),
+    do: do_intersperse_map(t, fun, sep, [sep, fun.(h) | acc])
+
   # Pattern match on empty map first
   defp encode_list_item(item, _depth, _opts) when item == %{} do
     # Empty object encodes as bare hyphen
-    [[Constants.list_item_marker()]]
+    [[@list_item_marker]]
   end
 
   # Map items in list
@@ -333,28 +374,23 @@ defmodule ToonEx.Encode.Arrays do
   # Extract helpers for array item types
   defp encode_empty_array_item(opts) do
     length_marker = format_length_marker(0, opts.length_marker)
-    [[Constants.list_item_marker(), Constants.space(), "[", length_marker, "]:"]]
+    [[@list_item_prefix, @open_bracket, length_marker, "]:"]]
   end
 
   defp encode_inline_array_item(item, opts) do
     length_marker = format_length_marker(length(item), opts.length_marker)
     delimiter_marker = format_delimiter_marker(opts.delimiter)
 
-    values =
-      item
-      |> Enum.map(&Primitives.encode(&1, opts.delimiter))
-      |> Enum.intersperse(opts.delimiter)
+    values = do_intersperse_map(item, &Primitives.encode(&1, opts.delimiter), opts.delimiter, [])
 
     [
       [
-        Constants.list_item_marker(),
-        Constants.space(),
-        "[",
+        @list_item_prefix,
+        @open_bracket,
         length_marker,
         delimiter_marker,
-        "]",
-        Constants.colon(),
-        Constants.space(),
+        @close_bracket,
+        @colon_space,
         values
       ]
     ]
@@ -365,13 +401,12 @@ defmodule ToonEx.Encode.Arrays do
     delimiter_marker = format_delimiter_marker(opts.delimiter)
 
     header = [
-      Constants.list_item_marker(),
-      Constants.space(),
-      "[",
+      @list_item_prefix,
+      @open_bracket,
       length_marker,
       delimiter_marker,
-      "]",
-      Constants.colon()
+      @close_bracket,
+      @colon
     ]
 
     # Performance: Tail-recursive accumulation instead of Enum.flat_map + Enum.map
@@ -397,8 +432,7 @@ defmodule ToonEx.Encode.Arrays do
   defp encode_primitive_item(item, opts) do
     [
       [
-        Constants.list_item_marker(),
-        Constants.space(),
+        @list_item_prefix,
         Primitives.encode(item, opts.delimiter)
       ]
     ]
@@ -461,11 +495,11 @@ defmodule ToonEx.Encode.Arrays do
 
   # Encode map values
   defp encode_value_with_optional_marker(key, v, needs_marker, depth, opts) when is_map(v) do
-    header_line = [key, Constants.colon()]
+    header_line = [key, @colon]
     nested_result = encode_nested_map(v, depth, opts)
 
     if needs_marker do
-      [[Constants.list_item_marker(), Constants.space(), header_line] | nested_result]
+      [[@list_item_prefix, header_line] | nested_result]
     else
       [[opts.indent_string, header_line] | nested_result]
     end
@@ -473,18 +507,18 @@ defmodule ToonEx.Encode.Arrays do
 
   # Fallback for unsupported types
   defp encode_value_with_optional_marker(key, _v, needs_marker, _depth, opts) do
-    line = [key, Constants.colon(), Constants.space(), Constants.null_literal()]
+    line = [key, @colon_space, @null_literal]
     [apply_marker(line, needs_marker, opts)]
   end
 
   # Helpers for building lines
   defp build_primitive_line(key, value, opts) do
-    [key, Constants.colon(), Constants.space(), Primitives.encode(value, opts.delimiter)]
+    [key, @colon_space, Primitives.encode(value, opts.delimiter)]
   end
 
   defp build_empty_array_line(key, opts) do
     length_marker = format_length_marker(0, opts.length_marker)
-    [Strings.encode_key(key), "[", length_marker, "]", Constants.colon()]
+    [Strings.encode_key(key), @open_bracket, length_marker, @bracket_close_colon]
   end
 
   defp build_inline_array_line(key, values, opts) do
@@ -492,25 +526,22 @@ defmodule ToonEx.Encode.Arrays do
     delimiter_marker = format_delimiter_marker(opts.delimiter)
 
     encoded_values =
-      values
-      |> Enum.map(&Primitives.encode(&1, opts.delimiter))
-      |> Enum.intersperse(opts.delimiter)
+      do_intersperse_map(values, &Primitives.encode(&1, opts.delimiter), opts.delimiter, [])
 
     [
       Strings.encode_key(key),
-      "[",
+      @open_bracket,
       length_marker,
       delimiter_marker,
-      "]",
-      Constants.colon(),
-      Constants.space(),
+      @close_bracket,
+      @colon_space,
       encoded_values
     ]
   end
 
   # Apply list marker or indent based on needs_marker flag
   defp apply_marker(line, true, _opts) do
-    [Constants.list_item_marker(), Constants.space() | line]
+    [@list_item_prefix | line]
   end
 
   defp apply_marker(line, false, opts) do
@@ -541,25 +572,28 @@ defmodule ToonEx.Encode.Arrays do
     encoded_key = Strings.encode_key(key)
     delimiter_marker = format_delimiter_marker(opts.delimiter)
 
-    fields = keys |> Enum.map(&Strings.encode_key/1) |> Enum.intersperse(opts.delimiter)
+    fields = do_intersperse_map(keys, &Strings.encode_key/1, opts.delimiter, [])
 
     header = [
       encoded_key,
-      "[",
+      @open_bracket,
       length_marker,
       delimiter_marker,
-      "]",
-      Constants.open_brace(),
+      @close_bracket,
+      @open_brace,
       fields,
-      Constants.close_brace(),
-      Constants.colon()
+      @close_brace,
+      @colon
     ]
 
     rows =
       Enum.map(v, fn obj ->
-        keys
-        |> Enum.map(fn k -> Primitives.encode(Map.get(obj, k), opts.delimiter) end)
-        |> Enum.intersperse(opts.delimiter)
+        do_intersperse_map(
+          keys,
+          fn k -> Primitives.encode(Map.get(obj, k), opts.delimiter) end,
+          opts.delimiter,
+          []
+        )
       end)
 
     header_line = apply_marker(header, needs_marker, opts)
@@ -584,7 +618,7 @@ defmodule ToonEx.Encode.Arrays do
       [first_line | rest] = nested
 
       [
-        [Constants.list_item_marker(), Constants.space(), first_line]
+        [@list_item_prefix, first_line]
         | Enum.map(rest, fn line -> [opts.indent_string, line] end)
       ]
     else

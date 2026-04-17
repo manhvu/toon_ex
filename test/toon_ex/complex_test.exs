@@ -15,7 +15,7 @@ defmodule ToonEx.ComplexTest do
   use ExUnit.Case, async: true
 
   alias ToonEx.Fixtures.Complex
-  alias ToonEx.Fixtures.Complex.{Address, Budget, Department, Employee, Organisation, Project}
+  alias ToonEx.Fixtures.Complex.{Address, Budget, Department}
 
   # Build once per test run (structs are immutable)
   @org Complex.sample()
@@ -434,9 +434,9 @@ defmodule ToonEx.ComplexTest do
     test "expand_paths: safe on a pre-encoded flat fragment" do
       # Encode a simple nested map with key_folding, then decode with expand_paths
       input = %{"user" => %{"address" => %{"city" => "Berlin"}}}
-      folded = encode!(input, key_folding: "safe")
+      folded = encode!(input, key_folding: :safe)
       assert folded == "user.address.city: Berlin"
-      expanded = decode!(folded, expand_paths: "safe")
+      expanded = decode!(folded, expand_paths: :safe)
       assert expanded == input
     end
 

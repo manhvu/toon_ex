@@ -113,11 +113,15 @@ defmodule ToonEx.Encode.Primitives do
   # If the fractional part becomes empty the decimal point is also dropped,
   # which correctly represents whole numbers (should never occur here since
   # whole-number floats are caught above, but defensive).
+  # Performance: Return iolist [int, ".", stripped] instead of binary concatenation
+  # (int <> "." <> stripped). The iolist avoids allocating a new binary and copying
+  # both strings into it. The final IO.iodata_to_binary at the top-level encoder
+  # flattens everything in one pass, so nested iolists are free.
   defp trim_trailing_zeros(str) do
     case String.split(str, ".", parts: 2) do
       [int, frac] ->
         stripped = String.trim_trailing(frac, "0")
-        if stripped == "", do: int, else: int <> "." <> stripped
+        if stripped == "", do: int, else: [int, ".", stripped]
 
       [int] ->
         int

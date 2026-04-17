@@ -37,8 +37,8 @@ defmodule ToonEx.Encode.Options do
       doc: "Key ordering information for preserving map key order"
     ],
     key_folding: [
-      type: {:in, ["off", "safe"]},
-      default: "off",
+      type: {:in, [:off, :safe]},
+      default: :off,
       doc: "Key folding: 'off' | 'safe' (fold single-key chains to dotted paths)"
     ],
     flatten_depth: [

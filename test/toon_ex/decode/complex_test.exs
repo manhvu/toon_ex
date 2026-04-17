@@ -66,7 +66,7 @@ defmodule ToonEx.Decode.ComplexObjectTest do
       [5]:
         - "1"
         - "2"
-        - channel:room1
+        - "channel:room1"
         - user_location
         - user_id: ""
           packet_id: 988586b4-d0b8-4703-94d3-725d9dffdd60

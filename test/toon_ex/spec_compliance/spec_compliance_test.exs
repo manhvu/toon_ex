@@ -356,8 +356,8 @@ defmodule ToonEx.SpecComplianceTest do
       data = %{"a" => %{"b" => %{"c" => 1}}}
 
       # Should not raise
-      toon_off = ToonEx.encode!(data, key_folding: "off")
-      toon_safe = ToonEx.encode!(data, key_folding: "safe")
+      toon_off = ToonEx.encode!(data, key_folding: :off)
+      toon_safe = ToonEx.encode!(data, key_folding: :safe)
 
       # safe mode should fold the keys
       assert String.contains?(toon_safe, "a.b.c:")
@@ -367,8 +367,8 @@ defmodule ToonEx.SpecComplianceTest do
     test "flatten_depth option is accepted" do
       data = %{"a" => %{"b" => %{"c" => %{"d" => 1}}}}
 
-      toon_depth2 = ToonEx.encode!(data, key_folding: "safe", flatten_depth: 2)
-      toon_infinity = ToonEx.encode!(data, key_folding: "safe", flatten_depth: :infinity)
+      toon_depth2 = ToonEx.encode!(data, key_folding: :safe, flatten_depth: 2)
+      toon_infinity = ToonEx.encode!(data, key_folding: :safe, flatten_depth: :infinity)
 
       # depth=2 should only fold a.b
       assert String.contains?(toon_depth2, "a.b:")
@@ -395,11 +395,11 @@ defmodule ToonEx.SpecComplianceTest do
       toon = "a.b.c: 1"
 
       # expand_paths=off should keep dotted key as literal
-      {:ok, result_off} = ToonEx.decode(toon, expand_paths: "off")
+      {:ok, result_off} = ToonEx.decode(toon, expand_paths: :off)
       assert Map.has_key?(result_off, "a.b.c")
 
       # expand_paths=safe should expand to nested structure
-      {:ok, result_safe} = ToonEx.decode(toon, expand_paths: "safe")
+      {:ok, result_safe} = ToonEx.decode(toon, expand_paths: :safe)
       assert result_safe == %{"a" => %{"b" => %{"c" => 1}}}
     end
 
@@ -744,7 +744,7 @@ defmodule ToonEx.SpecComplianceTest do
       toon = ToonEx.encode!(data)
       {:ok, decoded} = ToonEx.decode(toon)
 
-      assert decoded == data
+      assert data == decoded
     end
 
     test "objects as list items with tabular array as first field" do
@@ -839,37 +839,38 @@ defmodule ToonEx.SpecComplianceTest do
     end
 
     test "key folding with deeply nested single-key chains" do
-      data = %{
-        "a" => %{
-          "b" => %{
-            "c" => %{
-              "d" => %{
-                "e" => %{
-                  "f" => "deep_value"
+      data =
+        %{
+          "a" => %{
+            "b" => %{
+              "c" => %{
+                "d" => %{
+                  "e" => %{
+                    "f" => "deep_value"
+                  }
                 }
               }
             }
+          },
+          "x" => %{
+            "y" => 123
           }
-        },
-        "x" => %{
-          "y" => 123
         }
-      }
 
-      # With key_folding: "safe" and flatten_depth: :infinity
-      toon = ToonEx.encode!(data, key_folding: "safe", flatten_depth: :infinity)
+      # With key_folding: :safe and flatten_depth: :infinity
+      toon = ToonEx.encode!(data, key_folding: :safe, flatten_depth: :infinity)
       assert String.contains?(toon, "a.b.c.d.e.f:")
       assert String.contains?(toon, "x.y:")
 
-      {:ok, decoded} = ToonEx.decode(toon, expand_paths: "safe")
+      {:ok, decoded} = ToonEx.decode(toon, expand_paths: :safe)
       assert decoded == data
 
-      # With key_folding: "safe" and flatten_depth: 2
-      toon2 = ToonEx.encode!(data, key_folding: "safe", flatten_depth: 2)
+      # With key_folding: :safe and flatten_depth: 2
+      toon2 = ToonEx.encode!(data, key_folding: :safe, flatten_depth: 2)
       assert String.contains?(toon2, "a.b:")
       refute String.contains?(toon2, "a.b.c.d.e.f:")
 
-      {:ok, decoded2} = ToonEx.decode(toon2, expand_paths: "safe")
+      {:ok, decoded2} = ToonEx.decode(toon2, expand_paths: :safe)
       assert decoded2 == data
     end
 
@@ -882,7 +883,7 @@ defmodule ToonEx.SpecComplianceTest do
       f: 4
       """
 
-      {:ok, result} = ToonEx.decode(toon, expand_paths: "safe")
+      {:ok, result} = ToonEx.decode(toon, expand_paths: :safe)
 
       assert result == %{
                "a" => %{
@@ -899,11 +900,11 @@ defmodule ToonEx.SpecComplianceTest do
       """
 
       assert_raise ToonEx.DecodeError, fn ->
-        ToonEx.decode!(toon_conflict, expand_paths: "safe", strict: true)
+        ToonEx.decode!(toon_conflict, expand_paths: :safe, strict: true)
       end
 
       # Conflict scenario with strict=false (LWW)
-      {:ok, result_lww} = ToonEx.decode(toon_conflict, expand_paths: "safe", strict: false)
+      {:ok, result_lww} = ToonEx.decode(toon_conflict, expand_paths: :safe, strict: false)
       assert result_lww == %{"a" => 2}
     end
 
@@ -1093,9 +1094,9 @@ defmodule ToonEx.SpecComplianceTest do
 
       # Test with key folding (without path expansion to avoid conflicts)
       # Key folding creates dotted paths that may conflict with existing keys during expansion
-      toon_folded = ToonEx.encode!(data, key_folding: "safe", flatten_depth: :infinity)
+      toon_folded = ToonEx.encode!(data, key_folding: :safe, flatten_depth: :infinity)
       # Decode without path expansion to get the folded structure
-      {:ok, decoded_folded} = ToonEx.decode(toon_folded, expand_paths: "off")
+      {:ok, decoded_folded} = ToonEx.decode(toon_folded, expand_paths: :off)
       # Verify the folded structure is valid (keys will be dotted paths)
       assert is_map(decoded_folded)
     end

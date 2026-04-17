@@ -26,8 +26,8 @@ defmodule ToonEx.Encode.OptionsTest do
       assert schema[:key_order][:default] == nil
 
       # Validate key_folding option schema
-      assert schema[:key_folding][:type] == {:in, ["off", "safe"]}
-      assert schema[:key_folding][:default] == "off"
+      assert schema[:key_folding][:type] == {:in, [:off, :safe]}
+      assert schema[:key_folding][:default] == :off
 
       # Validate flatten_depth option schema
       assert schema[:flatten_depth][:type] == {:or, [:non_neg_integer, {:in, [:infinity]}]}
@@ -118,13 +118,13 @@ defmodule ToonEx.Encode.OptionsTest do
     end
 
     test "accepts valid key_folding 'off'" do
-      assert {:ok, opts} = Options.validate(key_folding: "off")
-      assert opts.key_folding == "off"
+      assert {:ok, opts} = Options.validate(key_folding: :off)
+      assert opts.key_folding == :off
     end
 
     test "accepts valid key_folding 'safe'" do
-      assert {:ok, opts} = Options.validate(key_folding: "safe")
-      assert opts.key_folding == "safe"
+      assert {:ok, opts} = Options.validate(key_folding: :safe)
+      assert opts.key_folding == :safe
     end
 
     test "returns error for invalid key_folding with descriptive message" do

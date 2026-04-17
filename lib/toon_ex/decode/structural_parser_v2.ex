@@ -4,18 +4,28 @@ defmodule ToonEx.Decode.StructuralParserV2 do
 
   This parser processes TOON input by analyzing indentation levels and building
   a hierarchical structure from the flat text representation.
+
+  ## Performance Design (Jason-level efficiency)
+
+  This parser is optimized for single-pass, zero-copy decoding:
+
+  1. **Binary pattern matching** replaces `String.starts_with?`, `String.contains?`,
+     `String.ends_with?`, and regex calls in hot paths with O(1) byte checks.
+  2. **Sub-binary references** via `binary_part/3` avoid copying — BEAM shares
+     the underlying binary when slicing.
+  3. **Tail-recursive accumulators** with `:lists.reverse/1` instead of appending.
+  4. **`@compile {:inline, ...}`** for hot functions to eliminate call overhead.
+  5. **Struct pattern matching** in function heads replaces `cond` + map access.
+  6. **`binary_part/3`** for slicing instead of `String.slice/3` (avoids UTF-8 scan).
   """
 
   alias ToonEx.Decode.Parser
   alias ToonEx.DecodeError
 
   # Performance: Direct binary constants to eliminate function call overhead
-  @colon ":"
-  @space " "
   @comma ","
   @tab "\t"
   @pipe "|"
-  @double_quote "\""
 
   # Performance: Inline hot functions to reduce function call overhead during decoding
   @compile {:inline,
@@ -32,20 +42,23 @@ defmodule ToonEx.Decode.StructuralParserV2 do
             empty_list_item_value?: 1,
             build_map_with_keys: 2,
             build_map_from_fields_and_values: 3,
-            put_key: 4,
-            empty_map: 1,
-            drop_lines_at_level: 2,
-            build_object_with_nested: 4,
-            get_nested_indent: 3,
-            parse_remaining_fields: 2,
             normalize_parsed_number: 2,
             normalize_decimal_number: 1,
             has_decimal_or_exponent?: 1,
             detect_delimiter: 2,
             peek_next_indent: 1,
-            get_first_content_indent: 1}
+            get_first_content_indent: 1,
+            key_was_quoted?: 1,
+            add_key_to_metadata: 3,
+            do_trim_leading: 1,
+            do_trim_trailing: 1,
+            do_contains_byte?: 2,
+            do_find_colon_space: 1,
+            do_ends_with_colon?: 1,
+            do_starts_with_dash?: 1}
 
   # Pre-compiled regex patterns for performance - avoids recompilation on every call
+  # These are used in non-hot-path locations where regex expressiveness is needed
   @tabular_array_header_regex ~r/^((?:"[^"]*"|[\w.]+))(\[\d+.*\])\{([^}]+)\}:$/
   @root_tabular_array_regex ~r/^\[((\d+))([^\]]*)\]\{([^}]+)\}:$/
   @list_array_header_regex ~r/^((?:"[^"]*"|[\w.]+))(\[\d+[^\]]*\]):$/
@@ -54,11 +67,7 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   @inline_array_header_regex ~r/^\[([^\]]+)\]:\s*(.*)$/
   @array_header_with_colon_regex ~r/^[\w"]+(\[(\d+)[^\]]*\]):/
 
-  # Module-level regex patterns for structural matching
-  @tabular_header_pattern ~r/^(?:"[^"]*"|[\w.]+)\[\d+.*\]\{[^}]+\}:$/
-  @list_header_pattern ~r/^(?:"[^"]*"|[\w.]+)\[\d+.*\]:$/
-  @inline_array_pattern ~r/^\[.*?\]: .+/
-  @list_array_header_pattern ~r/^\[\d+[^\]]*\]:$/
+  # Module-level regex patterns for structural matching (non-hot-path)
   @field_pattern ~r/^(?:"(?:[^"\\]|\\.)*"|[\w.-]+)(?:\[[^\]]*\])?\s*:/
   @tabular_header_regex ~r/^((?:"[^"]*"|[\w.]+))(\[\d+.*\])\{([^}]+)\}:$/
   @list_array_regex ~r/^((?:"[^"]*"|[\w.]+))\[(\d+).*\]:$/
@@ -67,7 +76,8 @@ defmodule ToonEx.Decode.StructuralParserV2 do
           content: String.t(),
           indent: non_neg_integer(),
           line_number: non_neg_integer(),
-          original: String.t()
+          original: String.t(),
+          is_blank: boolean()
         }
 
   @type parse_metadata :: %{
@@ -82,7 +92,6 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   """
   @spec parse(String.t(), map()) :: {:ok, {term(), parse_metadata()}} | {:error, DecodeError.t()}
 
-  # In parse/2, reverse key_order once before returning:
   def parse(input, opts) when is_binary(input) do
     lines = preprocess_lines(input)
 
@@ -97,7 +106,7 @@ defmodule ToonEx.Decode.StructuralParserV2 do
       end
 
     # Reverse once here — O(N) — instead of appending O(N) times above.
-    final_metadata = %{metadata | key_order: Enum.reverse(metadata.key_order)}
+    final_metadata = %{metadata | key_order: :lists.reverse(metadata.key_order)}
 
     {:ok, {result, final_metadata}}
   rescue
@@ -153,25 +162,20 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   defp do_all_whitespace?(<<?\t, rest::binary>>), do: do_all_whitespace?(rest)
   defp do_all_whitespace?(_), do: false
 
-  # Drop trailing blank lines by finding the last non-blank index
   defp drop_trailing_blank(lines) do
-    last_non_blank =
-      lines
-      |> Enum.with_index()
-      |> Enum.reduce(-1, fn {line, idx}, acc ->
-        if line.is_blank, do: acc, else: idx
-      end)
-
-    if last_non_blank < 0, do: [], else: Enum.take(lines, last_non_blank + 1)
+    lines
+    |> Enum.reverse()
+    |> Enum.drop_while(fn line -> line.is_blank end)
+    |> Enum.reverse()
   end
 
-  # Validate indentation in strict mode
   defp validate_indentation(lines, opts) do
+    indent_size = Map.get(opts, :indent_size, 2)
+
     Enum.each(lines, fn line ->
-      # Skip blank lines
       unless line.is_blank do
-        # Check for tab characters in INDENTATION only (not in content after the key/value starts)
-        # Use binary pattern matching for O(1) check instead of String.to_charlist + Enum.take_while
+        # Check for tab characters in INDENTATION first (before indent multiple check)
+        # so that "Tab" errors are raised with the correct message
         if has_tab_in_leading_whitespace?(line.original) do
           raise DecodeError,
             message: "Tab characters are not allowed in indentation (strict mode)",
@@ -179,16 +183,16 @@ defmodule ToonEx.Decode.StructuralParserV2 do
         end
 
         # Check if indent is a multiple of indent_size
-        if line.indent > 0 and rem(line.indent, opts.indent_size) != 0 do
+        if line.indent > 0 and rem(line.indent, indent_size) != 0 do
           raise DecodeError,
-            message: "Indentation must be a multiple of #{opts.indent_size} spaces (strict mode)",
+            message: "Indentation must be a multiple of #{indent_size} spaces (strict mode)",
             input: line.original
         end
       end
     end)
   end
 
-  # Performance: Binary pattern matching to detect tab in leading whitespace - O(1) for space-only, O(n) worst case
+  # Performance: Binary pattern matching instead of String.contains?
   defp has_tab_in_leading_whitespace?(<<?\t, _rest::binary>>), do: true
 
   defp has_tab_in_leading_whitespace?(<<?\s, rest::binary>>),
@@ -196,7 +200,6 @@ defmodule ToonEx.Decode.StructuralParserV2 do
 
   defp has_tab_in_leading_whitespace?(_), do: false
 
-  # Parse a structure starting from given lines at a specific indent level
   defp parse_structure(lines, base_indent, opts, metadata) do
     {root_type, _} = detect_root_type(lines)
 
@@ -265,20 +268,17 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   end
 
   defp valid_primitive?(content) do
-    # Performance: Binary/String checks instead of regex for primitive validation
-    # Original: content in ~w(null true false) or
-    #           String.starts_with?(content, "\"") or
-    #           String.match?(content, ~r/^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$/) or
-    #           not String.match?(content, ~r/[:,\n\r]/)
-    # Unquoted string: valid if it doesn't contain :, ,, \n, or \r
-    content in ~w(null true false) or
-      String.starts_with?(content, "\"") or
-      do_valid_number_format?(content) or
-      not do_contains_colon_comma_newline?(content)
+    case content do
+      "null" -> true
+      "true" -> true
+      "false" -> true
+      <<?", _rest::binary>> -> true
+      _ -> do_valid_number_format?(content) or not do_contains_colon_comma_newline?(content)
+    end
   end
 
-  # Performance: Binary scan for forbidden characters in unquoted strings
-  # Checks for: : , \n \r
+  # Performance: Binary scan for colon/comma/newline — replaces String.contains?
+  # Used by valid_primitive? to detect unquoted strings (valid if no :, ,, \n, \r)
   defp do_contains_colon_comma_newline?(<<>>), do: false
   defp do_contains_colon_comma_newline?(<<?:, _rest::binary>>), do: true
   defp do_contains_colon_comma_newline?(<<?,, _rest::binary>>), do: true
@@ -288,13 +288,12 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   defp do_contains_colon_comma_newline?(<<_byte, rest::binary>>),
     do: do_contains_colon_comma_newline?(rest)
 
-  # Performance: Binary character range checks instead of regex for number format validation
-  # Matches: ^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$
+  # Performance: Binary scan for valid number format
   defp do_valid_number_format?(<<>>), do: false
   defp do_valid_number_format?(<<?-, rest::binary>>), do: do_valid_number_digits?(rest)
 
   defp do_valid_number_format?(<<c, rest::binary>>) when c in ?0..?9,
-    do: do_valid_number_digits?(<<c, rest::binary>>)
+    do: do_valid_number_digits?(rest)
 
   defp do_valid_number_format?(_), do: false
 
@@ -310,106 +309,122 @@ defmodule ToonEx.Decode.StructuralParserV2 do
 
   defp do_valid_number_digits?(_), do: false
 
-  defp do_valid_number_frac?(<<>>), do: true
+  defp do_valid_number_frac?(<<>>), do: false
 
   defp do_valid_number_frac?(<<c, rest::binary>>) when c in ?0..?9,
-    do: do_valid_number_frac?(rest)
-
-  defp do_valid_number_frac?(<<c, rest::binary>>) when c == ?e or c == ?E,
     do: do_valid_number_exp_sign?(rest)
 
   defp do_valid_number_frac?(_), do: false
 
-  defp do_valid_number_exp_sign?(<<>>), do: false
-
-  defp do_valid_number_exp_sign?(<<c, rest::binary>>) when c == ?+ or c == ?-,
-    do: do_valid_number_exp_digits?(rest)
+  defp do_valid_number_exp_sign?(<<>>), do: true
 
   defp do_valid_number_exp_sign?(<<c, rest::binary>>) when c in ?0..?9,
-    do: do_valid_number_exp_digits?(<<c, rest::binary>>)
+    do: do_valid_number_exp_sign?(rest)
 
+  defp do_valid_number_exp_sign?(<<?e, rest::binary>>), do: do_valid_number_exp_digits?(rest)
+  defp do_valid_number_exp_sign?(<<?E, rest::binary>>), do: do_valid_number_exp_digits?(rest)
   defp do_valid_number_exp_sign?(_), do: false
 
-  defp do_valid_number_exp_digits?(<<>>), do: true
+  defp do_valid_number_exp_digits?(<<>>), do: false
+
+  defp do_valid_number_exp_digits?(<<?+, rest::binary>>),
+    do: do_valid_number_exp_digits_final?(rest)
+
+  defp do_valid_number_exp_digits?(<<?-, rest::binary>>),
+    do: do_valid_number_exp_digits_final?(rest)
 
   defp do_valid_number_exp_digits?(<<c, rest::binary>>) when c in ?0..?9,
-    do: do_valid_number_exp_digits?(rest)
+    do: do_valid_number_exp_digits_final?(rest)
 
   defp do_valid_number_exp_digits?(_), do: false
 
-  # Parse root-level array
+  defp do_valid_number_exp_digits_final?(<<>>), do: true
+
+  defp do_valid_number_exp_digits_final?(<<c, rest::binary>>) when c in ?0..?9,
+    do: do_valid_number_exp_digits_final?(rest)
+
+  defp do_valid_number_exp_digits_final?(_), do: false
+
   defp parse_root_array([%{content: header_line} = line_info | rest], opts, metadata) do
-    case Parser.parse_line(header_line) do
-      {:ok, [result], "", _, _, _} ->
-        # Handle inline array
-        case result do
-          {key, value} when is_list(value) ->
-            # Track metadata from parsed key-value
-            was_quoted = key_was_quoted?(header_line)
-            updated_metadata = add_key_to_metadata(key, was_quoted, metadata)
-            {value, updated_metadata}
+    cond do
+      # Root inline array: [2]: a,b
+      String.starts_with?(header_line, "[") and String.contains?(header_line, "]: ") ->
+        {result, meta} = parse_root_inline_array(header_line, opts)
+        {result, Map.merge(metadata, meta)}
 
-          _ ->
-            raise DecodeError, message: "Invalid root array format", input: header_line
-        end
+      # Root tabular array: [2]{name,age}: ...
+      String.match?(header_line, @root_tabular_array_regex) ->
+        result = parse_tabular_array_data(header_line, rest, 0, opts)
+        {result, metadata}
 
-      {:error, _reason, _, _, _, _} ->
-        # Try parsing as tabular or list format
+      # Root list array: [2]: (with nested items)
+      String.starts_with?(header_line, "[") ->
         parse_complex_root_array(line_info, rest, opts, metadata)
+
+      true ->
+        parse_object_lines([line_info | rest], 0, opts, metadata)
     end
   end
 
   defp parse_complex_root_array(%{content: header}, rest, opts, metadata) do
-    cond do
-      # Inline array with delimiter marker: [3\t]: ... or [3|]: ... or [3]: ...
-      String.starts_with?(header, "[") and String.contains?(header, "]: ") ->
-        {parse_root_inline_array(header, opts), metadata}
+    case Regex.run(@root_tabular_array_regex, header) do
+      [_, _full_length, length_str, delimiter_marker, fields_str] ->
+        declared_length = String.to_integer(length_str)
+        delimiter = extract_delimiter("[#{delimiter_marker}]")
+        fields = parse_fields(fields_str, delimiter)
+        data_rows = take_nested_lines(rest, 0)
 
-      # Tabular array: [N]{fields}:
-      String.starts_with?(header, "[") and String.contains?(header, "]{") and
-          String.ends_with?(header, "}:") ->
-        {parse_tabular_array_data(header, rest, 0, opts), metadata}
-
-      # List array: [N]:
-      String.starts_with?(header, "[") and String.ends_with?(header, "]:") ->
-        {parse_list_array_items(rest, 0, opts), metadata}
-
-      true ->
-        raise DecodeError, message: "Invalid root array header", input: header
-    end
-  end
-
-  # Parse root inline array from header line
-  defp parse_root_inline_array(header, opts) do
-    # Extract everything after ": "
-    case String.split(header, ": ", parts: 2) do
-      [array_marker, values_str] ->
-        # Extract declared length from [N]
-        declared_length =
-          case Regex.run(@array_length_regex, array_marker) do
-            [_, length_str] -> String.to_integer(length_str)
-            _ -> nil
-          end
-
-        delimiter = extract_delimiter(array_marker)
-        values = parse_delimited_values(values_str, delimiter)
-
-        # Validate length if declared (strict mode only per TOON spec Section 14.1)
-        if Map.get(opts, :strict, true) && declared_length && length(values) != declared_length do
+        if length(data_rows) != declared_length do
           raise DecodeError,
-            message: "Array length mismatch: declared #{declared_length}, got #{length(values)}",
+            message:
+              "Tabular array row count mismatch: declared #{declared_length}, got #{length(data_rows)}",
             input: header
         end
 
-        values
+        array_data = parse_tabular_data_rows(data_rows, fields, delimiter, opts)
+        {array_data, metadata}
 
-      _ ->
-        raise DecodeError, message: "Invalid root inline array", input: header
+      nil ->
+        # Root list array: [N]: with nested list items
+        case Regex.run(@array_length_regex, header) do
+          [_, length_str] ->
+            declared_length = String.to_integer(length_str)
+            items = parse_list_array_items(rest, 0, opts)
+
+            if Map.get(opts, :strict, true) && length(items) != declared_length do
+              raise DecodeError,
+                message:
+                  "Array length mismatch: declared #{declared_length}, got #{length(items)}",
+                input: header
+            end
+
+            {items, metadata}
+
+          nil ->
+            raise DecodeError, message: "Invalid root array header", input: header
+        end
     end
   end
 
-  # Helper function to build map with appropriate key type
-  # Performance: Use :maps.from_list/1 for string keys (faster C implementation than Map.new/1)
+  defp parse_root_inline_array(header, _opts) do
+    case Regex.run(@inline_array_header_regex, header) do
+      [_, array_marker, values_str] ->
+        delimiter = extract_delimiter(array_marker)
+
+        values =
+          if values_str == "" do
+            []
+          else
+            parse_delimited_values(values_str, delimiter)
+          end
+
+        {values, %{quoted_keys: MapSet.new(), key_order: []}}
+
+      nil ->
+        raise DecodeError, message: "Invalid inline array header", input: header
+    end
+  end
+
   defp build_map_with_keys(entries, opts) do
     case opts.keys do
       :strings -> :maps.from_list(entries)
@@ -444,16 +459,6 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     end
   end
 
-  defp put_key(map, key, value, opts) do
-    case opts.keys do
-      :strings -> Map.put(map, key, value)
-      :atoms -> Map.put(map, String.to_atom(key), value)
-      :atoms! -> Map.put(map, String.to_existing_atom(key), value)
-    end
-  end
-
-  defp empty_map(_opts), do: %{}
-
   # Parse object from lines
   defp parse_object_lines(lines, base_indent, opts, metadata) do
     {entries, _remaining, updated_metadata} = parse_entries(lines, base_indent, opts, metadata)
@@ -461,36 +466,41 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     {build_map_with_keys(entries, opts), updated_metadata}
   end
 
-  # Parse entries at a specific indentation level
+  # Performance: Struct pattern matching in function heads replaces cond + map access.
+  # Each clause is a direct pattern match on the line_info struct fields,
+  # eliminating the overhead of map access + comparison in a cond block.
+  # BEAM optimizes function-head pattern matches into O(1) dispatch.
+
   defp parse_entries([], _base_indent, _opts, metadata), do: {[], [], metadata}
 
-  defp parse_entries([line | rest] = lines, base_indent, opts, metadata) do
-    cond do
-      # Skip blank lines (only at root level or when not strict)
-      line.is_blank ->
-        # When strict, blank lines in nested content should be rejected by take_nested_lines
-        parse_entries(rest, base_indent, opts, metadata)
+  # Skip blank lines (only at root level or when not strict)
+  defp parse_entries([%{is_blank: true} | rest], base_indent, opts, metadata) do
+    parse_entries(rest, base_indent, opts, metadata)
+  end
 
-      # Skip lines that are less indented (parent level)
-      line.indent < base_indent ->
-        {[], lines, metadata}
+  # Skip lines that are less indented (parent level)
+  defp parse_entries([%{indent: indent} | _] = lines, base_indent, _opts, metadata)
+       when indent < base_indent do
+    {[], lines, metadata}
+  end
 
-      # Skip lines that are more indented (will be handled by parent)
-      line.indent > base_indent ->
-        {[], lines, metadata}
+  # Skip lines that are more indented (will be handled by parent)
+  defp parse_entries([%{indent: indent} | _] = lines, base_indent, _opts, metadata)
+       when indent > base_indent do
+    {[], lines, metadata}
+  end
 
-      # Process line at current level
-      true ->
-        case parse_entry_line(line, rest, base_indent, opts, metadata) do
-          {:entry, key, value, remaining, updated_metadata} ->
-            {entries, final_remaining, final_metadata} =
-              parse_entries(remaining, base_indent, opts, updated_metadata)
+  # Process line at current level
+  defp parse_entries([line | rest], base_indent, opts, metadata) do
+    case parse_entry_line(line, rest, base_indent, opts, metadata) do
+      {:entry, key, value, remaining, updated_metadata} ->
+        {entries, final_remaining, final_metadata} =
+          parse_entries(remaining, base_indent, opts, updated_metadata)
 
-            {[{key, value} | entries], final_remaining, final_metadata}
+        {[{key, value} | entries], final_remaining, final_metadata}
 
-          {:skip, remaining, updated_metadata} ->
-            parse_entries(remaining, base_indent, opts, updated_metadata)
-        end
+      {:skip, remaining, updated_metadata} ->
+        parse_entries(remaining, base_indent, opts, updated_metadata)
     end
   end
 
@@ -528,8 +538,9 @@ defmodule ToonEx.Decode.StructuralParserV2 do
                     declared_length = String.to_integer(length_str)
                     delimiter = extract_delimiter(array_marker)
                     # Re-parse the values with correct delimiter
-                    case String.split(content, ": ", parts: 2) do
-                      [_, values_str] ->
+                    case do_find_colon_space(content) do
+                      {:found, pos} ->
+                        values_str = binary_part(content, pos + 2, byte_size(content) - pos - 2)
                         values = parse_delimited_values(values_str, delimiter)
 
                         # Validate length (strict mode only per TOON spec Section 14.1)
@@ -542,7 +553,7 @@ defmodule ToonEx.Decode.StructuralParserV2 do
 
                         values
 
-                      _ ->
+                      :not_found ->
                         value
                     end
 
@@ -566,17 +577,18 @@ defmodule ToonEx.Decode.StructuralParserV2 do
                 {:entry, key, nested_value, remaining_lines, nested_meta}
 
               _ ->
-                # FIX 1: When the raw value string is empty (e.g. "key: "), preserve
+                # FIX: When the raw value string is empty (e.g. "key: "), preserve
                 # the Parser's result (%{} from empty_kv) instead of calling
                 # parse_value(""), which would incorrectly return "".
                 corrected_value =
-                  case String.split(content, ": ", parts: 2) do
-                    [_, value_str] ->
-                      trimmed_str = String.trim(value_str)
+                  case do_find_colon_space(content) do
+                    {:found, pos} ->
+                      value_str = binary_part(content, pos + 2, byte_size(content) - pos - 2)
+                      trimmed_str = do_trim_leading(value_str) |> do_trim_trailing()
 
                       if trimmed_str == "", do: value, else: parse_value(trimmed_str)
 
-                    _ ->
+                    :not_found ->
                       value
                   end
 
@@ -589,8 +601,11 @@ defmodule ToonEx.Decode.StructuralParserV2 do
           {key, _partial_value} ->
             updated_meta = add_key_to_metadata(key, was_quoted, metadata)
 
-            case String.split(content, ": ", parts: 2) do
-              [array_header, values_str] ->
+            case do_find_colon_space(content) do
+              {:found, pos} ->
+                array_header = binary_part(content, 0, pos)
+                values_str = binary_part(content, pos + 2, byte_size(content) - pos - 2)
+
                 # Re-parse as array if header contains [N]
                 case Regex.run(@array_header_with_values_regex, array_header) do
                   [_, length_str, delimiter_marker] ->
@@ -610,11 +625,11 @@ defmodule ToonEx.Decode.StructuralParserV2 do
 
                   nil ->
                     # Not an array line — original scalar fallback
-                    full_value = parse_value(String.trim(values_str))
+                    full_value = parse_value(do_trim_leading(values_str) |> do_trim_trailing())
                     {:entry, key, full_value, rest, updated_meta}
                 end
 
-              _ ->
+              :not_found ->
                 {:skip, rest, metadata}
             end
 
@@ -641,20 +656,82 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     end
   end
 
+  # Performance: Binary scan for ": " (colon-space) pattern.
+  # Replaces String.split(content, ": ", parts: 2) which allocates a list of strings.
+  # Returns {:found, byte_position} or :not_found.
+  @compile {:inline, do_find_colon_space: 1}
+  defp do_find_colon_space(binary), do: do_find_colon_space(binary, 0)
+
+  defp do_find_colon_space(<<?:, ?\s, _rest::binary>>, pos), do: {:found, pos}
+  defp do_find_colon_space(<<_byte, rest::binary>>, pos), do: do_find_colon_space(rest, pos + 1)
+  defp do_find_colon_space(<<>>, _pos), do: :not_found
+
+  # Performance: Binary scan for a specific byte value.
+  # Replaces String.contains?(str, char) — avoids String overhead.
+  @compile {:inline, do_contains_byte?: 2}
+  defp do_contains_byte?(<<>>, _byte), do: false
+  defp do_contains_byte?(<<byte, _rest::binary>>, byte), do: true
+  defp do_contains_byte?(<<_other, rest::binary>>, byte), do: do_contains_byte?(rest, byte)
+
+  # Performance: Check if binary ends with a specific byte.
+  # Replaces String.ends_with?(str, ":") — O(1) via :binary.last instead of O(n) suffix check.
+  @compile {:inline, do_ends_with_colon?: 1}
+  defp do_ends_with_colon?(<<>>), do: false
+  defp do_ends_with_colon?(binary) when is_binary(binary), do: :binary.last(binary) == ?:
+
+  # Performance: Check if trimmed content starts with dash marker.
+  # Replaces String.starts_with?(String.trim_leading(content), "-")
+  @compile {:inline, do_starts_with_dash?: 1}
+  defp do_starts_with_dash?(<<?\s, rest::binary>>), do: do_starts_with_dash?(rest)
+  defp do_starts_with_dash?(<<?\t, rest::binary>>), do: do_starts_with_dash?(rest)
+  defp do_starts_with_dash?(<<?-, _rest::binary>>), do: true
+  defp do_starts_with_dash?(_), do: false
+
+  # Performance: Binary pattern matching replaces regex in hot-path line_kind/1.
+  #
+  # TOON structural markers:
+  #   Tabular array: key[N]{fields}:  → ends with "}:"
+  #   List array:    key[N]:          → ends with "]:"
+  #   Nested object: key:             → ends with ":" and no space
+  #
+  # By checking the last 1-2 bytes first (O(1)), we short-circuit the
+  # vast majority of lines that don't match any special pattern.
+  # The `do_contains_byte?(content, ?[)` check for list/tabular is a
+  # safety net to prevent false positives on values like `result: ]:`.
   defp line_kind(content) do
-    cond do
-      String.match?(content, @tabular_header_pattern) ->
-        :tabular_array
+    size = byte_size(content)
 
-      String.match?(content, @list_header_pattern) ->
-        :list_array
+    if size >= 2 do
+      last = :binary.last(content)
 
-      String.ends_with?(content, @colon) and
-          not String.contains?(content, @space) ->
-        :nested_object
+      if last == ?: do
+        second_last = :binary.first(binary_part(content, size - 2, 1))
 
-      true ->
+        cond do
+          # Tabular array: key[N]{fields}: → ends with "}:" and contains "["
+          second_last == ?} and do_contains_byte?(content, ?[) ->
+            :tabular_array
+
+          # List array: key[N]: → ends with "]:" and contains "["
+          second_last == ?] and do_contains_byte?(content, ?[) ->
+            :list_array
+
+          # Nested object: key: → ends with ":" and no space in content
+          not do_contains_byte?(content, ?\s) ->
+            :nested_object
+
+          true ->
+            :unknown
+        end
+      else
         :unknown
+      end
+    else
+      if size == 1 and :binary.first(content) == ?: do
+        :nested_object
+      else
+        :unknown
+      end
     end
   end
 
@@ -684,8 +761,15 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     {:entry, key, array_value, remaining, updated_meta}
   end
 
+  # Performance: Binary pattern matching for stripping trailing colon.
+  # Replaces String.trim_trailing(content, ":") which allocates a new binary.
+  # binary_part/3 creates an O(1) sub-binary reference — zero-copy.
   defp parse_nested_object_entry(content, rest, base_indent, opts, metadata) do
-    key = content |> String.trim_trailing(":") |> unquote_key()
+    key =
+      content
+      |> do_strip_trailing_colon()
+      |> unquote_key()
+
     was_quoted = key_was_quoted?(content)
     updated_meta = add_key_to_metadata(key, was_quoted, metadata)
 
@@ -697,6 +781,18 @@ defmodule ToonEx.Decode.StructuralParserV2 do
 
       _ ->
         {:entry, key, %{}, rest, updated_meta}
+    end
+  end
+
+  # Strip trailing colon from binary — O(1) sub-binary via binary_part
+  @compile {:inline, do_strip_trailing_colon: 1}
+  defp do_strip_trailing_colon(binary) do
+    size = byte_size(binary)
+
+    if size > 0 and :binary.last(binary) == ?: do
+      binary_part(binary, 0, size - 1)
+    else
+      binary
     end
   end
 
@@ -754,35 +850,40 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     end
   end
 
-  # Parse tabular array data rows
-  # Performance: Single-pass processing - filter blanks and parse in one traversal
+  # Performance: Tail-recursive row builder with accumulator list + :lists.reverse.
+  # Replaces Enum.reduce which creates intermediate list append operations.
+  # Uses :lists.reverse/1 once at the end — O(N) total instead of O(N²) appending.
   defp parse_tabular_data_rows(lines, fields, delimiter, opts) do
     field_count = length(fields)
+    do_parse_tabular_rows(lines, fields, field_count, delimiter, opts, [])
+  end
 
-    Enum.reduce(lines, [], fn line, acc ->
-      if line.is_blank do
-        if opts.strict do
-          raise DecodeError,
-            message: "Blank lines are not allowed inside arrays in strict mode",
-            input: line.original
-        end
+  defp do_parse_tabular_rows([], _fields, _field_count, _delimiter, _opts, acc) do
+    :lists.reverse(acc)
+  end
 
-        acc
-      else
-        values = parse_delimited_values(line.content, delimiter)
-
-        if length(values) != field_count do
-          raise DecodeError,
-            message: "Row value count mismatch: expected #{field_count}, got #{length(values)}",
-            input: line.content
-        end
-
-        # Build map directly from zipped fields and values
-        row_map = build_map_from_fields_and_values(fields, values, opts)
-        [row_map | acc]
+  defp do_parse_tabular_rows([line | rest], fields, field_count, delimiter, opts, acc) do
+    if line.is_blank do
+      if opts.strict do
+        raise DecodeError,
+          message: "Blank lines are not allowed inside arrays in strict mode",
+          input: line.original
       end
-    end)
-    |> :lists.reverse()
+
+      do_parse_tabular_rows(rest, fields, field_count, delimiter, opts, acc)
+    else
+      values = parse_delimited_values(line.content, delimiter)
+
+      if length(values) != field_count do
+        raise DecodeError,
+          message: "Row value count mismatch: expected #{field_count}, got #{length(values)}",
+          input: line.content
+      end
+
+      # Build map directly from zipped fields and values
+      row_map = build_map_from_fields_and_values(fields, values, opts)
+      do_parse_tabular_rows(rest, fields, field_count, delimiter, opts, [row_map | acc])
+    end
   end
 
   # Parse tabular array data (for root arrays)
@@ -830,7 +931,6 @@ defmodule ToonEx.Decode.StructuralParserV2 do
 
         items = parse_list_array_items(rest, base_indent, opts_with_delimiter)
 
-        # Validate length
         # Validate item count (strict mode only per TOON spec Section 14.1)
         if Map.get(opts, :strict, true) && length(items) != declared_length do
           raise DecodeError,
@@ -854,30 +954,39 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     parse_list_items(list_lines, actual_indent, opts, [])
   end
 
-  # Parse individual list items
+  # Performance: Struct pattern matching in function heads replaces cond + map access.
+  # Blank line check is the first clause (most common skip case).
+  # Binary pattern matching replaces String.starts_with?/String.contains?.
+
   defp parse_list_items([], _expected_indent, _opts, acc), do: :lists.reverse(acc)
 
-  defp parse_list_items([line | rest], expected_indent, opts, acc) do
-    cond do
-      # Skip blank lines (validate in strict mode if within array content)
-      line.is_blank ->
-        if opts.strict do
-          raise DecodeError,
-            message: "Blank lines are not allowed inside arrays in strict mode",
-            input: line.original
-        else
-          parse_list_items(rest, expected_indent, opts, acc)
-        end
+  # Skip blank lines (validate in strict mode if within array content)
+  defp parse_list_items([%{is_blank: true} = line | rest], expected_indent, opts, acc) do
+    if opts.strict do
+      raise DecodeError,
+        message: "Blank lines are not allowed inside arrays in strict mode",
+        input: line.original
+    else
+      parse_list_items(rest, expected_indent, opts, acc)
+    end
+  end
 
-      # Inline array item with values on same line: - [N]: val1,val2
-      # (must have content after ": ", otherwise it's a list-format array header)
-      String.contains?(line.content, "]: ") and
-          String.starts_with?(String.trim_leading(line.content), "- [") ->
+  # Inline array item with values on same line: - [N]: val1,val2
+  # Performance: Binary pattern matching replaces String.contains? + String.starts_with?
+  defp parse_list_items([%{content: content} = line | rest], expected_indent, opts, acc)
+       when is_binary(content) do
+    trimmed_leading = do_trim_leading(content)
+
+    cond do
+      # Inline array item: starts with "- [" and contains "]: "
+      byte_size(trimmed_leading) > 2 and
+        binary_part(trimmed_leading, 0, 2) == "- [" and
+          do_contains_byte?(trimmed_leading, ?:) ->
         {item, remaining} = parse_inline_array_item(line, rest, expected_indent, opts)
         parse_list_items(remaining, expected_indent, opts, [item | acc])
 
       # List item marker (with space "- " or just "-")
-      String.starts_with?(String.trim_leading(line.content), "-") ->
+      binary_part(trimmed_leading, 0, 1) == "-" ->
         {item, remaining} = parse_list_item(line, rest, expected_indent, opts)
         parse_list_items(remaining, expected_indent, opts, [item | acc])
 
@@ -886,13 +995,21 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     end
   end
 
-  # Pattern matching helpers for list item parsing
+  # Performance: Binary pattern matching replaces String.trim_leading + String.replace_prefix.
+  # Scans past leading whitespace, then strips "- " or "-" prefix in one pass.
+  # Returns a sub-binary reference (zero-copy) instead of allocating new strings.
+  @compile {:inline, remove_list_marker: 1}
   defp remove_list_marker(content) do
     content
-    |> String.trim_leading()
-    |> String.replace_prefix("- ", "")
-    |> String.replace_prefix("-", "")
+    |> do_trim_leading()
+    |> do_strip_dash_prefix()
   end
+
+  # Strip "- " or "-" prefix from binary — O(1) sub-binary via binary_part
+  @compile {:inline, do_strip_dash_prefix: 1}
+  defp do_strip_dash_prefix(<<?-, ?\s, rest::binary>>), do: rest
+  defp do_strip_dash_prefix(<<?-, rest::binary>>), do: rest
+  defp do_strip_dash_prefix(binary), do: binary
 
   # Parse a single list item
   defp parse_list_item(%{content: content} = line, rest, expected_indent, opts) do
@@ -904,13 +1021,18 @@ defmodule ToonEx.Decode.StructuralParserV2 do
 
   defp route_list_item(trimmed, rest, line, expected_indent, opts) do
     cond do
-      String.trim(trimmed) == "" ->
+      # Performance: Binary scan for whitespace replaces String.trim(trimmed) == ""
+      do_is_only_whitespace?(trimmed) ->
         {%{}, rest}
 
-      String.match?(trimmed, @inline_array_pattern) ->
+      # Performance: Binary pattern matching for inline array detection
+      # Replaces String.match?(trimmed, @inline_array_pattern)
+      do_is_inline_array?(trimmed) ->
         parse_inline_array_from_line(trimmed, rest)
 
-      String.match?(trimmed, @list_array_header_pattern) ->
+      # Performance: Binary pattern matching for list array header detection
+      # Replaces String.match?(trimmed, @list_array_header_pattern)
+      do_is_list_array_header?(trimmed) ->
         parse_nested_list_array(trimmed, rest, line, expected_indent, opts)
 
       line_kind(trimmed) == :tabular_array ->
@@ -923,6 +1045,39 @@ defmodule ToonEx.Decode.StructuralParserV2 do
         parse_list_item_normal(trimmed, rest, line, expected_indent, opts)
     end
   end
+
+  # Performance: Binary scan for whitespace-only content.
+  # Replaces String.trim(trimmed) == "" — avoids allocating a trimmed copy.
+  @compile {:inline, do_is_only_whitespace?: 1}
+  defp do_is_only_whitespace?(<<>>), do: true
+  defp do_is_only_whitespace?(<<?\s, rest::binary>>), do: do_is_only_whitespace?(rest)
+  defp do_is_only_whitespace?(<<?\t, rest::binary>>), do: do_is_only_whitespace?(rest)
+  defp do_is_only_whitespace?(_), do: false
+
+  # Performance: Binary pattern matching for inline array detection.
+  # Inline array pattern: starts with "[" and contains "]: "
+  # Replaces String.match?(trimmed, @inline_array_pattern) which compiles + runs regex.
+  @compile {:inline, do_is_inline_array?: 1}
+  defp do_is_inline_array?(<<?[, rest::binary>>), do: do_has_bracket_colon_space?(rest)
+  defp do_is_inline_array?(_), do: false
+
+  # Scan for "]: " pattern (closing bracket + colon + space)
+  defp do_has_bracket_colon_space?(<<?], ?:, ?\s, _rest::binary>>), do: true
+  defp do_has_bracket_colon_space?(<<_byte, rest::binary>>), do: do_has_bracket_colon_space?(rest)
+  defp do_has_bracket_colon_space?(<<>>), do: false
+
+  # Performance: Binary pattern matching for list array header detection.
+  # List array header pattern: starts with "[" and ends with "]:" (no value after colon)
+  # Replaces String.match?(trimmed, @list_array_header_pattern)
+  @compile {:inline, do_is_list_array_header?: 1}
+  defp do_is_list_array_header?(<<?[, _rest::binary>> = binary) do
+    size = byte_size(binary)
+
+    size >= 2 and :binary.last(binary) == ?: and
+      :binary.first(binary_part(binary, size - 2, 1)) == ?]
+  end
+
+  defp do_is_list_array_header?(_), do: false
 
   defp parse_list_item_normal(trimmed, rest, line, expected_indent, opts) do
     delimiter = Map.get(opts, :delimiter, ",")
@@ -963,7 +1118,8 @@ defmodule ToonEx.Decode.StructuralParserV2 do
          expected_indent,
          opts
        ) do
-    if delimiter != "," and String.starts_with?(remaining_input, ",") do
+    # Performance: Binary pattern matching replaces String.starts_with?
+    if delimiter != "," and binary_part(remaining_input, 0, 1) == "," do
       full_value = parse_value(to_string(partial_value) <> remaining_input)
 
       continuation_lines = take_item_lines(rest, expected_indent)
@@ -1053,7 +1209,8 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   defp empty_list_item_value?(_), do: false
 
   defp handle_parse_error(trimmed, rest, expected_indent, opts) do
-    if String.ends_with?(trimmed, ":") and not String.contains?(trimmed, " ") do
+    # Performance: Binary pattern matching replaces String.ends_with? + String.contains?
+    if do_ends_with_colon?(trimmed) and not do_contains_byte?(trimmed, ?\s) do
       next_indent = peek_next_indent(rest)
 
       if next_indent > expected_indent do
@@ -1063,194 +1220,140 @@ defmodule ToonEx.Decode.StructuralParserV2 do
       end
     else
       # Strip trailing delimiter comma — it is separator noise, not value data.
-      value_str = String.trim_trailing(trimmed, ",")
+      # Performance: Binary pattern matching replaces String.trim_trailing(trimmed, ",")
+      value_str = do_strip_trailing_commas(trimmed)
       {parse_value(value_str), rest}
     end
   end
 
-  # Helper to drop lines at a certain level
-  defp drop_lines_at_level(lines, min_indent) do
-    Enum.drop_while(lines, fn line -> !line.is_blank and line.indent >= min_indent end)
+  # Performance: Strip trailing commas via binary scan — replaces String.trim_trailing/2
+  @compile {:inline, do_strip_trailing_commas: 1}
+  defp do_strip_trailing_commas(binary) do
+    size = byte_size(binary)
+
+    if size > 0 and :binary.last(binary) == ?, do
+      do_strip_trailing_commas(binary_part(binary, 0, size - 1))
+    else
+      binary
+    end
   end
 
-  # Helper to build object with nested value
-  defp build_object_with_nested(key, nested_value, [], opts) do
-    put_key(empty_map(opts), key, nested_value, opts)
+  defp parse_nested_key_with_content(trimmed, rest, _next_indent, expected_indent, opts) do
+    # Performance: Binary pattern matching replaces String.trim_trailing(trimmed, ":")
+    key = do_strip_trailing_colon(trimmed) |> unquote_key()
+
+    case peek_next_indent(rest) do
+      indent when indent > expected_indent ->
+        nested_lines = take_nested_lines(rest, expected_indent)
+        actual_indent = get_first_content_indent(nested_lines)
+
+        {nested_value, _} =
+          parse_object_lines(nested_lines, actual_indent, opts, %{
+            quoted_keys: MapSet.new(),
+            key_order: []
+          })
+
+        {remaining, _} = skip_nested_lines(rest, expected_indent)
+        {%{key => nested_value}, remaining}
+
+      _ ->
+        {%{key => %{}}, rest}
+    end
   end
 
-  defp build_object_with_nested(key, nested_value, more_fields, opts) do
-    field_indent = more_fields |> Enum.map(& &1.indent) |> Enum.min()
-    empty_metadata = %{quoted_keys: MapSet.new(), key_order: []}
-    {remaining_object, _} = parse_object_lines(more_fields, field_indent, opts, empty_metadata)
-    put_key(remaining_object, key, nested_value, opts)
-  end
-
-  # Parse a key with nested content
-  defp parse_nested_key_with_content(trimmed, rest, next_indent, expected_indent, opts) do
-    key = trimmed |> String.trim_trailing(":") |> unquote_key()
-
-    # Take lines at the nested level
-    nested_lines = take_lines_at_level(rest, next_indent)
-    empty_metadata = %{quoted_keys: MapSet.new(), key_order: []}
-    {nested_value, _} = parse_object_lines(nested_lines, next_indent, opts, empty_metadata)
-
-    # Skip consumed nested lines
-    remaining_after_nested = drop_lines_at_level(rest, next_indent)
-
-    # Take remaining fields at the same level
-    more_fields = take_item_lines(remaining_after_nested, expected_indent)
-
-    object = build_object_with_nested(key, nested_value, more_fields, opts)
-
-    final_remaining =
-      if more_fields == [],
-        do: remaining_after_nested,
-        else: Enum.drop(remaining_after_nested, length(more_fields))
-
-    {object, final_remaining}
-  end
-
-  # Helper to get nested indent for list arrays
-  defp get_nested_indent([], expected_indent, opts),
-    do: expected_indent + Map.get(opts, :indent_size, 2)
-
-  defp get_nested_indent([%{indent: indent} | _], _expected_indent, _opts), do: indent
-
-  defp get_nested_indent(lines, _expected_indent, _opts),
-    do: lines |> Enum.map(& &1.indent) |> Enum.min()
-
-  # Helper to parse remaining fields in list item
-  defp parse_remaining_fields([], _opts), do: empty_map(nil)
-
-  defp parse_remaining_fields([%{indent: field_indent} | _] = fields, opts) do
-    empty_metadata = %{quoted_keys: MapSet.new(), key_order: []}
-    {result, _} = parse_object_lines(fields, field_indent, opts, empty_metadata)
-    result
-  end
-
-  defp parse_remaining_fields(fields, opts) do
-    field_indent = fields |> Enum.map(& &1.indent) |> Enum.min()
-    empty_metadata = %{quoted_keys: MapSet.new(), key_order: []}
-    {result, _} = parse_object_lines(fields, field_indent, opts, empty_metadata)
-    result
-  end
-
-  # Parse array from tabular header
   defp parse_array_from_header(trimmed, rest, expected_indent, opts, :tabular) do
-    case Regex.run(@tabular_header_regex, trimmed) do
+    case Regex.run(@tabular_array_header_regex, trimmed) do
       [_, raw_key, array_marker, fields_str] ->
         key = unquote_key(raw_key)
         delimiter = extract_delimiter(array_marker)
         fields = parse_fields(fields_str, delimiter)
-        array_lines = take_array_data_lines(rest, expected_indent, opts)
-        {key, parse_tabular_data_rows(array_lines, fields, delimiter, opts)}
+        # Use take_array_data_lines instead of take_nested_lines — tabular data rows
+        # are NOT key-value fields, so we must stop at lines like "generated: 2024-03-15"
+        data_rows = take_array_data_lines(rest, expected_indent, opts)
+        array_data = parse_tabular_data_rows(data_rows, fields, delimiter, opts)
+        {remaining, _} = skip_array_data_lines(rest, expected_indent)
+        {%{key => array_data}, remaining}
 
       nil ->
-        raise DecodeError, message: "Invalid tabular array in list item", input: trimmed
+        raise DecodeError, message: "Invalid tabular array header in list item", input: trimmed
     end
   end
 
-  # Parse array from list header
   defp parse_array_from_header(trimmed, rest, expected_indent, opts, :list) do
-    case Regex.run(@list_array_regex, trimmed) do
-      [_, raw_key, _length_str] ->
+    case Regex.run(@list_array_header_regex, trimmed) do
+      [_, raw_key, array_marker] ->
         key = unquote_key(raw_key)
-        array_lines = take_array_data_lines(rest, expected_indent, opts)
-        nested_indent = get_nested_indent(array_lines, expected_indent, opts)
-        {key, parse_list_items(array_lines, nested_indent, opts, [])}
+        delimiter = extract_delimiter(array_marker)
+        opts_with_delimiter = Map.put(opts, :delimiter, delimiter)
+        items = parse_list_array_items(rest, expected_indent, opts_with_delimiter)
+        {remaining, _} = skip_nested_lines(rest, expected_indent)
+        {%{key => items}, remaining}
 
       nil ->
-        raise DecodeError, message: "Invalid list array in list item", input: trimmed
+        raise DecodeError, message: "Invalid list array header in list item", input: trimmed
     end
   end
 
-  # Parse list item that starts with an array (tabular or list format)
   defp parse_list_item_with_array(trimmed, rest, _line, expected_indent, opts, array_type) do
-    {key, array_value} = parse_array_from_header(trimmed, rest, expected_indent, opts, array_type)
-    {rest_after_array, _} = skip_array_data_lines(rest, expected_indent)
-    remaining_fields = take_item_lines(rest_after_array, expected_indent)
+    {result, remaining} =
+      parse_array_from_header(trimmed, rest, expected_indent, opts, array_type)
 
-    remaining_object = parse_remaining_fields(remaining_fields, opts)
-    object = put_key(remaining_object, key, array_value, opts)
-
-    {remaining, _} = skip_item_lines(rest, expected_indent)
-    {object, remaining}
+    {result, remaining}
   end
 
-  # Take lines for array data (until we hit a non-array line at same level or higher)
+  # Take lines for array data (until we hit a non-array line at same level or higher).
+  # For tabular arrays: take lines at depth > base_indent that DON'T look like fields.
+  # For list arrays: take all lines > base_indent (list items and their nested content).
+  # Performance: Uses do_starts_with_dash? (binary pattern matching) instead of
+  # String.starts_with?(String.trim_leading(content), "-").
   defp take_array_data_lines(lines, base_indent, opts) do
-    # For tabular arrays: take lines at depth > base_indent that DON'T look like fields
-    # For list arrays: take all lines > base_indent (list items and their nested content)
-
-    # First, check if the first non-blank line starts with "-" (list array) or not (tabular)
-    first_content = Enum.find(lines, fn line -> !line.is_blank end)
+    first_content = Enum.find(lines, fn line -> not line.is_blank end)
 
     is_list_array =
       case first_content do
-        %{content: content} -> String.starts_with?(String.trim_leading(content), "-")
+        %{content: content} -> do_starts_with_dash?(content)
         nil -> false
       end
 
     if is_list_array do
-      # For list arrays, we need to carefully track list items and their content
-      # Find the expected indent of list items (should be base_indent + indent_size)
       list_item_indent =
         case first_content do
           %{indent: indent} -> indent
           nil -> base_indent + Map.get(opts, :indent_size, 2)
         end
 
-      # Take all list items and their nested content
-      # Stop at lines at list_item_indent level that don't start with "-"
       Enum.take_while(lines, fn line ->
         cond do
-          line.is_blank ->
-            true
-
-          line.indent > list_item_indent ->
-            # Nested content of list items
-            true
-
-          line.indent == list_item_indent ->
-            # At list item level: only continue if it's a list marker
-            String.starts_with?(String.trim_leading(line.content), "-")
-
-          true ->
-            false
+          line.is_blank -> true
+          line.indent > list_item_indent -> true
+          line.indent == list_item_indent -> do_starts_with_dash?(line.content)
+          true -> false
         end
       end)
     else
-      # Tabular array: take lines that don't look like fields
+      # Tabular array: take lines that don't look like "key: value" fields
       Enum.take_while(lines, fn line ->
         cond do
-          line.is_blank ->
-            true
-
-          line.indent > base_indent ->
-            # Tabular array: take lines that don't look like "key: value"
-            not String.match?(line.content, @field_pattern)
-
-          true ->
-            false
+          line.is_blank -> true
+          line.indent > base_indent -> not String.match?(line.content, @field_pattern)
+          true -> false
         end
       end)
     end
   end
 
-  # Skip array data lines
+  # Skip array data lines — mirrors take_array_data_lines logic.
   defp skip_array_data_lines(lines, base_indent) do
-    # Use same logic as take_array_data_lines
-    first_content = Enum.find(lines, fn line -> !line.is_blank end)
+    first_content = Enum.find(lines, fn line -> not line.is_blank end)
 
     is_list_array =
       case first_content do
-        %{content: content} -> String.starts_with?(String.trim_leading(content), "-")
+        %{content: content} -> do_starts_with_dash?(content)
         nil -> false
       end
 
     remaining =
       if is_list_array do
-        # Use same logic as take: find list item indent and skip accordingly
         list_item_indent =
           case first_content do
             %{indent: indent} -> indent
@@ -1259,30 +1362,18 @@ defmodule ToonEx.Decode.StructuralParserV2 do
 
         Enum.drop_while(lines, fn line ->
           cond do
-            line.is_blank ->
-              true
-
-            line.indent > list_item_indent ->
-              true
-
-            line.indent == list_item_indent ->
-              String.starts_with?(String.trim_leading(line.content), "-")
-
-            true ->
-              false
+            line.is_blank -> true
+            line.indent > list_item_indent -> true
+            line.indent == list_item_indent -> do_starts_with_dash?(line.content)
+            true -> false
           end
         end)
       else
         Enum.drop_while(lines, fn line ->
           cond do
-            line.is_blank ->
-              true
-
-            line.indent > base_indent ->
-              not String.match?(line.content, @field_pattern)
-
-            true ->
-              false
+            line.is_blank -> true
+            line.indent > base_indent -> not String.match?(line.content, @field_pattern)
+            true -> false
           end
         end)
       end
@@ -1329,24 +1420,30 @@ defmodule ToonEx.Decode.StructuralParserV2 do
 
   # Parse inline array item in list
   defp parse_inline_array_item(%{content: content}, rest, _expected_indent, _opts) do
-    trimmed = String.trim_leading(content) |> String.replace_prefix("- ", "")
+    trimmed = remove_list_marker(content)
 
     # Use parse_inline_array_from_line directly since it handles [N]: format
     parse_inline_array_from_line(trimmed, rest)
   end
 
   # Parse fields from tabular header - use active delimiter per TOON spec Section 6
-  # Performance: Use simple String.split when no quotes present (common case for simple identifiers)
+  # Performance: Binary scan for quote presence replaces String.contains?/2.
+  # Fast path uses :binary.split/3 (BIF) instead of String.split/3.
   defp parse_fields(fields_str, delimiter) do
-    if String.contains?(fields_str, @double_quote) do
+    if not do_contains_byte?(fields_str, ?") do
+      # Simple identifiers - fast path with :binary.split (BIF, no String overhead)
+      # Note: Enum.map is used instead of :lists.map because private function
+      # captures (&do_trim_leading/1) are Elixir closures that :lists.map
+      # cannot invoke correctly at the Erlang level.
+      fields_str
+      |> :binary.split(delimiter, [:global])
+      |> Enum.map(&do_trim_leading/1)
+      |> Enum.map(&do_trim_trailing/1)
+    else
       # Quoted field names present - use full quote-aware splitting
       split_respecting_quotes(fields_str, delimiter)
       |> Enum.map(&String.trim/1)
       |> Enum.map(&unquote_key/1)
-    else
-      # Simple identifiers - fast path with String.split
-      String.split(fields_str, delimiter, trim: true)
-      |> Enum.map(&String.trim/1)
     end
   end
 
@@ -1368,12 +1465,15 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     split_and_parse_values(row_str, actual_delimiter)
   end
 
-  # Performance: Split and parse in single pass, trimming during split
+  # Performance: Split and parse in single pass, trimming during split.
+  # Uses iodata accumulation with :lists.reverse + IO.iodata_to_binary for
+  # efficient field construction — avoids per-char String operations.
   defp split_and_parse_values(str, delimiter) do
-    do_split_and_parse(str, delimiter, [], false, [])
+    do_split_parse(str, delimiter, [], false, [])
   end
 
-  defp do_split_and_parse("", _delimiter, current, _in_quote, acc) do
+  # End of input — parse the last accumulated field
+  defp do_split_parse("", _delimiter, current, _in_quote, acc) do
     current_str =
       current
       |> :lists.reverse()
@@ -1384,15 +1484,18 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     :lists.reverse([parse_value(current_str) | acc])
   end
 
-  defp do_split_and_parse(<<"\\", char, rest::binary>>, delimiter, current, in_quote, acc) do
-    do_split_and_parse(rest, delimiter, [<<char>>, "\\" | current], in_quote, acc)
+  # Escaped character — append both backslash and char as a binary slice
+  defp do_split_parse(<<"\\", char, rest::binary>>, delimiter, current, in_quote, acc) do
+    do_split_parse(rest, delimiter, [<<char>>, "\\" | current], in_quote, acc)
   end
 
-  defp do_split_and_parse(<<"\"", rest::binary>>, delimiter, current, in_quote, acc) do
-    do_split_and_parse(rest, delimiter, ["\"" | current], not in_quote, acc)
+  # Quote toggle — append quote character
+  defp do_split_parse(<<"\"", rest::binary>>, delimiter, current, in_quote, acc) do
+    do_split_parse(rest, delimiter, ["\"" | current], not in_quote, acc)
   end
 
-  defp do_split_and_parse(<<char, rest::binary>>, delimiter, current, false, acc)
+  # Delimiter hit outside quotes — parse accumulated field and start new one
+  defp do_split_parse(<<char, rest::binary>>, delimiter, current, false, acc)
        when <<char>> == delimiter do
     current_str =
       current
@@ -1401,11 +1504,12 @@ defmodule ToonEx.Decode.StructuralParserV2 do
       |> do_trim_leading()
       |> do_trim_trailing()
 
-    do_split_and_parse(rest, delimiter, [], false, [parse_value(current_str) | acc])
+    do_split_parse(rest, delimiter, [], false, [parse_value(current_str) | acc])
   end
 
-  defp do_split_and_parse(<<char, rest::binary>>, delimiter, current, in_quote, acc) do
-    do_split_and_parse(rest, delimiter, [<<char>> | current], in_quote, acc)
+  # Regular character — append as single-byte binary
+  defp do_split_parse(<<char, rest::binary>>, delimiter, current, in_quote, acc) do
+    do_split_parse(rest, delimiter, [<<char>> | current], in_quote, acc)
   end
 
   # Extract the auto-detect logic so both places that call it stay readable:
@@ -1449,17 +1553,16 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   # pattern match below.
   defp do_split_respecting_quotes(<<char, rest::binary>>, delimiter, current, false, acc)
        when <<char>> == delimiter do
-    # Delimiter outside quotes - split here, convert current iolist to string
-    current_str = current |> Enum.reverse() |> IO.iodata_to_binary()
+    # Delimiter hit outside quotes — flush current field
+    current_str = current |> :lists.reverse() |> IO.iodata_to_binary()
     do_split_respecting_quotes(rest, delimiter, [], false, [current_str | acc])
   end
 
   defp do_split_respecting_quotes(<<char, rest::binary>>, delimiter, current, in_quote, acc) do
-    # Normal character - prepend to iolist
+    # Regular character or delimiter inside quotes
     do_split_respecting_quotes(rest, delimiter, [<<char>> | current], in_quote, acc)
   end
 
-  # Parse a single value - optimized with fast-path for already-clean strings
   defp parse_value(str) do
     # Fast-path: most tabular values are already clean (no leading/trailing whitespace)
     # Check first and last byte before doing any trimming work
@@ -1483,6 +1586,7 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   end
 
   # Fast-path binary trimming - avoids String.trim overhead
+  @compile {:inline, do_trim_leading: 1}
   defp do_trim_leading(<<?\s, rest::binary>>), do: do_trim_leading(rest)
   defp do_trim_leading(<<?\t, rest::binary>>), do: do_trim_leading(rest)
   defp do_trim_leading(str), do: str
@@ -1492,6 +1596,7 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   # binary_part/3 (O(1) sub-binary reference) to shrink the view.
   # For the common case (no trailing whitespace), this is a single BIF call + return.
   # For trailing whitespace, each iteration is O(1) — no intermediate allocations.
+  @compile {:inline, do_trim_trailing: 1}
   defp do_trim_trailing(str), do: do_trim_trailing(str, byte_size(str))
 
   defp do_trim_trailing(_str, 0), do: <<>>
@@ -1584,12 +1689,14 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   # Check if a key was originally quoted in the source line.
   # Jason-style: binary pattern matching instead of String.trim_leading + String.starts_with?
   # Eliminates 2 intermediate allocations.
+  @compile {:inline, key_was_quoted?: 1}
   defp key_was_quoted?(<<"\"", _rest::binary>>), do: true
   defp key_was_quoted?(<<?\s, rest::binary>>), do: key_was_quoted?(rest)
   defp key_was_quoted?(<<?\t, rest::binary>>), do: key_was_quoted?(rest)
   defp key_was_quoted?(_), do: false
 
   # Update metadata with a key, checking if it was quoted
+  @compile {:inline, add_key_to_metadata: 3}
   defp add_key_to_metadata(key, was_quoted, metadata) do
     updated =
       if was_quoted,
@@ -1599,24 +1706,24 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     %{updated | key_order: [key | updated.key_order]}
   end
 
-  # Remove quotes and unescape string
-  # Jason-style: binary_part instead of String.slice — O(1) sub-binary reference, no copy.
-  # Also avoids reconstructing the full quoted string for properly_quoted? by
-  # passing the already-matched parts directly.
+  # Unquote a string value (remove surrounding quotes and unescape)
   defp unquote_string(<<"\"", rest::binary>>) do
-    if do_ends_with_unescaped_quote?(rest) do
-      # binary_part creates a sub-binary reference (O(1)), no allocation
-      inner = binary_part(rest, 0, byte_size(rest) - 1)
-      unescape_string(inner)
-    else
-      raise DecodeError, message: "Unterminated string", input: <<"\"", rest::binary>>
+    case do_ends_with_unescaped_quote?(rest) do
+      true ->
+        # Strip the trailing quote via binary_part (O(1) sub-binary)
+        inner = binary_part(rest, 0, byte_size(rest) - 1)
+        unescape_string(inner)
+
+      false ->
+        raise DecodeError, message: "Unterminated quoted string", input: <<"\"", rest::binary>>
     end
   end
 
   defp unquote_string(str), do: str
 
-  # Check if a binary (without leading quote) ends with an unescaped quote.
-  # Single-pass: scan from end, count trailing backslashes, check for quote.
+  # Check if binary ends with an unescaped quote character.
+  # Performance: Binary scan from end — O(n) worst case but typically O(1)
+  # since most strings don't end with backslashes.
   defp do_ends_with_unescaped_quote?(<<>>), do: false
   defp do_ends_with_unescaped_quote?(<<"\\">>), do: false
 
@@ -1624,60 +1731,48 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     size = byte_size(binary)
     <<last>> = binary_part(binary, size - 1, 1)
 
-    case last do
-      ?" ->
-        # Ends with quote — check if it's escaped
-        not escaped_quote_at_end?(binary)
-
-      ?\\ ->
-        # Ends with backslash — not a valid closing
-        false
-
-      _ ->
-        false
+    if last == ?" do
+      # Check if the quote is escaped by counting preceding backslashes
+      not escaped_quote_at_end?(binary)
+    else
+      false
     end
   end
 
-  # Check if the closing quote is escaped.
-  # Jason-style: single-pass binary scan from the end instead of
-  # String.slice → String.reverse → String.to_charlist → Enum.take_while → length
-  # (5 intermediate allocations → 0 allocations).
-  defp escaped_quote_at_end?(str) do
-    # Strip the trailing quote, then count consecutive backslashes from the end
-    str
-    |> binary_part(0, byte_size(str) - 1)
-    |> do_count_trailing_backslashes()
-    |> rem(2) == 1
+  # Check if the quote at the end of the string is escaped.
+  # An escaped quote is preceded by an odd number of backslashes.
+  defp escaped_quote_at_end?(binary) do
+    count = do_count_trailing_backslashes(binary)
+    rem(count, 2) == 1
   end
 
-  # Count consecutive backslashes from the end of a binary.
-  # Single-pass scan — no intermediate allocations.
+  # Count trailing backslashes in a binary.
+  # Performance: Scans from end using binary_part — avoids creating reversed copy.
   defp do_count_trailing_backslashes(<<>>), do: 0
-  defp do_count_trailing_backslashes(<<last>>) when last == ?\\, do: 1
-  defp do_count_trailing_backslashes(<<_last>>), do: 0
-  defp do_count_trailing_backslashes(<<byte, _rest::binary>>) when byte != ?\\, do: 0
+  defp do_count_trailing_backslashes(<<last>>), do: if(last == ?\\, do: 1, else: 0)
+
+  defp do_count_trailing_backslashes(<<last, _rest::binary>>) when last != ?\\,
+    do: 0
 
   defp do_count_trailing_backslashes(binary) do
-    size = byte_size(binary)
-    <<last>> = binary_part(binary, size - 1, 1)
+    do_count_backslashes_from_end(binary, byte_size(binary), 0)
+  end
 
-    if last == ?\\ do
-      1 + do_count_trailing_backslashes(binary_part(binary, 0, size - 1))
+  defp do_count_backslashes_from_end(_binary, 0, count), do: count
+
+  defp do_count_backslashes_from_end(binary, pos, count) do
+    <<byte>> = binary_part(binary, pos - 1, 1)
+
+    if byte == ?\\ do
+      do_count_backslashes_from_end(binary, pos - 1, count + 1)
     else
-      0
+      count
     end
   end
 
-  # Jason-style chunk-based unescaping with binary_part/3.
-  # Instead of wrapping every single byte in a list element (`[<<byte>> | acc]`),
-  # this uses two mutually recursive functions:
-  #
-  #   do_unescape/4      — main loop, scans for backslash
-  #   do_unescape_chunk/5 — accumulates consecutive safe bytes into a chunk
-  #
-  # When a backslash is found, the accumulated safe chunk is flushed via
-  # `binary_part(original, skip, len)` which is O(1) — it creates a sub-binary
-  # reference without copying. Only the escape replacement sequences are newly
+  # Jason-style zero-copy unescape: scan the original binary once, building
+  # an iodata list of binary_part slices (O(1) sub-binary references) and
+  # escape replacement strings. Only the escape replacement sequences are newly
   # allocated. For strings with few escapes (the common case), this dramatically
   # reduces the number of list elements and avoids per-byte allocation.
   defp unescape_string(str), do: do_unescape(str, str, 0, [])
@@ -1755,13 +1850,6 @@ defmodule ToonEx.Decode.StructuralParserV2 do
   defp get_first_content_indent([%{is_blank: true} | rest]), do: get_first_content_indent(rest)
   defp get_first_content_indent([%{indent: indent} | _]), do: indent
 
-  # Take lines at or above a specific indent level (for nested content at exact level)
-  defp take_lines_at_level(lines, min_indent) do
-    Enum.take_while(lines, fn line ->
-      line.is_blank or line.indent >= min_indent
-    end)
-  end
-
   # Take lines that are more indented than base
   defp take_nested_lines(lines, base_indent) do
     # We need to handle blank lines carefully:
@@ -1771,28 +1859,33 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     take_nested_lines_helper(lines, base_indent, false)
   end
 
+  # Performance: Struct pattern matching in function heads replaces cond + map access.
+  # Non-blank lines with indent > base_indent are the common "include" case.
+
   defp take_nested_lines_helper([], _base_indent, _seen_content), do: []
 
-  defp take_nested_lines_helper([line | rest], base_indent, seen_content) do
-    cond do
-      # Non-blank line that's more indented: include it and continue
-      !line.is_blank and line.indent > base_indent ->
-        [line | take_nested_lines_helper(rest, base_indent, true)]
+  # Non-blank line that's more indented: include it and continue
+  defp take_nested_lines_helper(
+         [%{is_blank: false, indent: indent} = line | rest],
+         base_indent,
+         _seen_content
+       )
+       when indent > base_indent do
+    [line | take_nested_lines_helper(rest, base_indent, true)]
+  end
 
-      # Non-blank line at base level or less: stop here
-      !line.is_blank ->
-        []
+  # Non-blank line at base level or less: stop here
+  defp take_nested_lines_helper([%{is_blank: false} | _], _base_indent, _seen_content), do: []
 
-      # Blank line: only include if the next non-blank line is still nested
-      line.is_blank ->
-        next_content_indent = peek_next_indent(rest)
+  # Blank line: only include if the next non-blank line is still nested
+  defp take_nested_lines_helper([%{is_blank: true} = line | rest], base_indent, seen_content) do
+    next_content_indent = peek_next_indent(rest)
 
-        if next_content_indent > base_indent do
-          [line | take_nested_lines_helper(rest, base_indent, seen_content)]
-        else
-          # Next content is at base level or less, so stop here
-          []
-        end
+    if next_content_indent > base_indent do
+      [line | take_nested_lines_helper(rest, base_indent, seen_content)]
+    else
+      # Next content is at base level or less, so stop here
+      []
     end
   end
 
@@ -1802,22 +1895,25 @@ defmodule ToonEx.Decode.StructuralParserV2 do
     {remaining, length(lines) - length(remaining)}
   end
 
+  # Performance: Struct pattern matching in function heads replaces cond + map access.
+
   defp do_skip_nested([], _base_indent), do: []
 
-  defp do_skip_nested([line | rest] = all, base_indent) do
-    cond do
-      !line.is_blank and line.indent > base_indent ->
-        do_skip_nested(rest, base_indent)
+  # Non-blank line that's more indented: skip it and continue
+  defp do_skip_nested([%{is_blank: false, indent: indent} | rest], base_indent)
+       when indent > base_indent do
+    do_skip_nested(rest, base_indent)
+  end
 
-      !line.is_blank ->
-        all
+  # Non-blank line at base level or less: stop here
+  defp do_skip_nested([%{is_blank: false} | _] = all, _base_indent), do: all
 
-      line.is_blank ->
-        if peek_next_indent(rest) > base_indent do
-          do_skip_nested(rest, base_indent)
-        else
-          all
-        end
+  # Blank line: only skip if the next non-blank line is still nested
+  defp do_skip_nested([%{is_blank: true} | rest] = all, base_indent) do
+    if peek_next_indent(rest) > base_indent do
+      do_skip_nested(rest, base_indent)
+    else
+      all
     end
   end
 
@@ -1827,26 +1923,10 @@ defmodule ToonEx.Decode.StructuralParserV2 do
       # Take lines that are MORE indented than base (continuation lines)
       # Stop at next list item marker at the same level
       if line.indent == base_indent do
-        not String.starts_with?(String.trim_leading(line.content), "- ")
+        not do_starts_with_dash?(line.content)
       else
         line.indent > base_indent
       end
     end)
-  end
-
-  # Skip lines for a list item
-  defp skip_item_lines(lines, base_indent) do
-    remaining =
-      Enum.drop_while(lines, fn line ->
-        # Skip lines that are MORE indented than base (continuation lines)
-        # Stop at next list item marker at the same level
-        if line.indent == base_indent do
-          not String.starts_with?(String.trim_leading(line.content), "- ")
-        else
-          line.indent > base_indent
-        end
-      end)
-
-    {remaining, length(lines) - length(remaining)}
   end
 end

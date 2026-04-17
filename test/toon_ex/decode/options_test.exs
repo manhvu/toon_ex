@@ -22,8 +22,8 @@ defmodule ToonEx.Decode.OptionsTest do
       assert schema[:indent_size][:default] == 2
 
       # Validate expand_paths option schema
-      assert schema[:expand_paths][:type] == {:in, ["off", "safe"]}
-      assert schema[:expand_paths][:default] == "off"
+      assert schema[:expand_paths][:type] == {:in, [:off, :safe]}
+      assert schema[:expand_paths][:default] == :off
     end
   end
 
@@ -34,7 +34,7 @@ defmodule ToonEx.Decode.OptionsTest do
       assert opts.keys == :strings
       assert opts.strict == true
       assert opts.indent_size == 2
-      assert opts.expand_paths == "off"
+      assert opts.expand_paths == :off
     end
 
     test "accepts valid keys option :strings" do
@@ -92,13 +92,13 @@ defmodule ToonEx.Decode.OptionsTest do
     end
 
     test "accepts valid expand_paths option 'off'" do
-      assert {:ok, opts} = Options.validate(expand_paths: "off")
-      assert opts.expand_paths == "off"
+      assert {:ok, opts} = Options.validate(expand_paths: :off)
+      assert opts.expand_paths == :off
     end
 
     test "accepts valid expand_paths option 'safe'" do
-      assert {:ok, opts} = Options.validate(expand_paths: "safe")
-      assert opts.expand_paths == "safe"
+      assert {:ok, opts} = Options.validate(expand_paths: :safe)
+      assert opts.expand_paths == :safe
     end
 
     test "returns error for invalid expand_paths option" do

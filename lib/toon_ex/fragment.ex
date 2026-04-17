@@ -21,9 +21,9 @@ defmodule ToonEx.Fragment do
       #=> "user:\\n  name: Alice"
   """
 
-  defstruct [:encode]
+  defstruct [:encode, :encode_key]
 
-  @type t :: %__MODULE__{encode: (keyword() -> iodata())}
+  @type t :: %__MODULE__{encode: (keyword() -> iodata()), encode_key: (keyword() -> iodata())}
 
   @doc """
   Creates a new fragment from pre-encoded iodata or an encoding function.
@@ -46,10 +46,14 @@ defmodule ToonEx.Fragment do
   """
   @spec new(iodata() | (keyword() -> iodata())) :: t()
   def new(iodata) when is_list(iodata) or is_binary(iodata) do
-    %__MODULE__{encode: fn _opts -> iodata end}
+    %__MODULE__{
+      encode: fn _opts -> iodata end
+    }
   end
 
   def new(encode) when is_function(encode, 1) do
-    %__MODULE__{encode: encode}
+    %__MODULE__{
+      encode: encode
+    }
   end
 end

@@ -55,7 +55,7 @@ defmodule ToonEx.Decode.MapsTest do
     end
 
     test "quoted dotted key is NOT expanded with expand_paths: safe" do
-      {:ok, result} = ToonEx.decode(~s("a.b": 1), expand_paths: "safe")
+      {:ok, result} = ToonEx.decode(~s("a.b": 1), expand_paths: :safe)
       assert result == %{"a.b" => 1}
     end
   end

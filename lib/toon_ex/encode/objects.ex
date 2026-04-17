@@ -200,6 +200,12 @@ defmodule ToonEx.Encode.Objects do
 
   # Fragment — inject pre-encoded iodata directly (Jason-style)
   # Must come before is_map guard since Fragment is a struct (which is a map).
+  #
+  # Performance: Uses iodata_split_lines/1 instead of IO.iodata_to_binary + String.split.
+  # This avoids materializing the entire fragment into a contiguous binary before splitting.
+  # Instead, we walk the iodata tree and extract sub-binary references via binary_part/3,
+  # preserving the zero-copy benefit of iolist construction. Only the final IO.iodata_to_binary
+  # at the top-level encoder boundary flattens everything into a single binary.
   defp encode_regular_entry(writer, key, %ToonEx.Fragment{} = fragment, depth, opts) do
     encoded_key = Strings.encode_key(key)
     header = [encoded_key, Constants.colon()]
@@ -207,21 +213,20 @@ defmodule ToonEx.Encode.Objects do
 
     fragment_iodata = fragment.encode.(opts)
 
-    # Convert fragment iodata to lines and append indented
-    fragment_binary = IO.iodata_to_binary(fragment_iodata)
+    # Split iodata on newlines without converting to binary first.
+    # Each line remains as iodata (sub-binary references), preserving
+    # the zero-copy benefit of iolist construction.
+    case iodata_split_lines(fragment_iodata) do
+      [] ->
+        writer
 
-    if fragment_binary == "" do
-      writer
-    else
-      fragment_lines = String.split(fragment_binary, "\n")
-      indent = opts.indent_string
+      [""] ->
+        writer
 
-      indented_lines =
-        Enum.map(fragment_lines, fn line ->
-          [indent, line]
-        end)
-
-      append_lines(writer, indented_lines)
+      lines ->
+        indent = opts.indent_string
+        indented_lines = Enum.map(lines, fn line -> [indent, line] end)
+        append_lines(writer, indented_lines)
     end
   end
 
@@ -231,6 +236,82 @@ defmodule ToonEx.Encode.Objects do
 
   defp encode_regular_entry(writer, key, _value, depth, opts) do
     encode_null_entry(writer, key, depth, opts)
+  end
+
+  # ── IOdata line splitter ─────────────────────────────────────────────────────
+  # Splits iodata on newline characters without converting to a single binary.
+  # Returns a list of iodata chunks, one per line.
+  # Preserves sub-binary references (binary_part) for zero-copy line extraction.
+  # This avoids the overhead of IO.iodata_to_binary/1 + String.split/2 which
+  # materializes the entire fragment into a contiguous binary before splitting.
+
+  @spec iodata_split_lines(iodata()) :: [iodata()]
+  defp iodata_split_lines(binary) when is_binary(binary) do
+    # Fast path for binary input: :binary.split with :global creates
+    # sub-binary references (no full copy of each line).
+    :binary.split(binary, "\n", [:global])
+  end
+
+  defp iodata_split_lines(list) when is_list(list) do
+    do_iodata_split_lines(list, [], [])
+  end
+
+  # End of iodata list — finalize current line
+  defp do_iodata_split_lines([], current_line_rev, lines_rev) do
+    current_line = :lists.reverse(current_line_rev)
+    :lists.reverse([current_line | lines_rev])
+  end
+
+  # Binary chunk — scan for newlines using :binary.match for O(n) scanning
+  # with sub-binary extraction via binary_part (no full copy).
+  defp do_iodata_split_lines([chunk | rest], current_line_rev, lines_rev)
+       when is_binary(chunk) do
+    case chunk do
+      "" ->
+        # Skip empty binary chunks — they add no content
+        do_iodata_split_lines(rest, current_line_rev, lines_rev)
+
+      _ ->
+        case :binary.match(chunk, "\n") do
+          :nomatch ->
+            # No newline in this chunk — add to current line and continue
+            do_iodata_split_lines(rest, [chunk | current_line_rev], lines_rev)
+
+          {pos, 1} ->
+            # Found newline at position pos — split the chunk using binary_part
+            # (creates a sub-binary reference, no data copy)
+            before = binary_part(chunk, 0, pos)
+            after_pos = pos + 1
+            rest_of_chunk = binary_part(chunk, after_pos, byte_size(chunk) - after_pos)
+
+            # Complete current line with "before" part appended
+            current_line =
+              case before do
+                "" -> :lists.reverse(current_line_rev)
+                _ -> :lists.reverse(current_line_rev, [before])
+              end
+
+            # Continue with rest of chunk (may contain more newlines) and rest of iodata
+            do_iodata_split_lines([rest_of_chunk | rest], [], [current_line | lines_rev])
+        end
+    end
+  end
+
+  # Nested iodata list — flatten into processing queue
+  defp do_iodata_split_lines([chunk | rest], current_line_rev, lines_rev)
+       when is_list(chunk) do
+    do_iodata_split_lines(chunk ++ rest, current_line_rev, lines_rev)
+  end
+
+  # Single byte (integer) — check if it's a newline
+  defp do_iodata_split_lines([chunk | rest], current_line_rev, lines_rev)
+       when is_integer(chunk) do
+    if chunk == ?\n do
+      current_line = :lists.reverse(current_line_rev)
+      do_iodata_split_lines(rest, [], [current_line | lines_rev])
+    else
+      do_iodata_split_lines(rest, [<<chunk>> | current_line_rev], lines_rev)
+    end
   end
 
   # Helper functions for each entry type
@@ -253,13 +334,16 @@ defmodule ToonEx.Encode.Objects do
     Writer.push(writer, line, depth)
   end
 
+  # Performance: Return iolist for non-empty prefix to avoid binary concatenation
+  # at each nesting level. The iolist is converted to binary only when needed
+  # for MapSet membership checks in has_collision?/4.
   defp build_path_prefix("", key), do: key
-  defp build_path_prefix(prefix, key), do: prefix <> "." <> key
+  defp build_path_prefix(prefix, key), do: [prefix, ".", key]
 
   # Check if we should fold this key-value pair into a dotted path
   defp should_fold?(key, value, opts, path_prefix) do
-    case Map.get(opts, :key_folding, "off") do
-      "safe" ->
+    case Map.get(opts, :key_folding, :off) do
+      :safe ->
         # Only fold single-key maps with valid identifier segments
         Utils.map?(value) and
           map_size(value) == 1 and
@@ -273,6 +357,9 @@ defmodule ToonEx.Encode.Objects do
   end
 
   # Check if folding would create a collision with forbidden fold paths
+  # Performance: Convert iolist path_prefix to binary only at the MapSet boundary.
+  # path_prefix may be an iolist (from build_path_prefix) or a binary (initial "").
+  # IO.iodata_to_binary/1 on a binary is essentially a no-op, so this is safe for both cases.
   defp has_collision?(key, value, opts, path_prefix) do
     forbidden = Map.get(opts, :forbidden_fold_paths, MapSet.new())
 
@@ -280,12 +367,15 @@ defmodule ToonEx.Encode.Objects do
     {path, _final_value} = collect_fold_path([key], value, %{flatten_depth: :infinity}, 1)
     local_folded = Enum.join(path, ".")
 
-    # Build the full path from root
+    # Convert path_prefix from iodata to binary for MapSet membership check
+    prefix_bin = IO.iodata_to_binary(path_prefix)
+
+    # Build the full path from root as iodata, then convert to binary for MapSet check
     full_folded_key =
-      if path_prefix == "" do
+      if prefix_bin == "" do
         local_folded
       else
-        path_prefix <> "." <> local_folded
+        IO.iodata_to_binary([prefix_bin, ".", local_folded])
       end
 
     # Check if the full folded path collides with any forbidden path

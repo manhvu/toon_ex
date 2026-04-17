@@ -11,7 +11,7 @@ defmodule ToonEx.Encode.ObjectsTest do
         indent: 2,
         indent_string: "  ",
         key_order: %{[] => ["name", "age"]},
-        key_folding: "off"
+        key_folding: :off
       }
 
       data = %{"age" => 30, "name" => "Alice"}
@@ -28,7 +28,7 @@ defmodule ToonEx.Encode.ObjectsTest do
         indent: 2,
         indent_string: "  ",
         key_order: %{["nested"] => ["x", "y"]},
-        key_folding: "off"
+        key_folding: :off
       }
 
       data = %{"age" => 30, "name" => "Alice"}
@@ -45,7 +45,7 @@ defmodule ToonEx.Encode.ObjectsTest do
         indent: 2,
         indent_string: "  ",
         key_order: ["name", "age"],
-        key_folding: "off"
+        key_folding: :off
       }
 
       data = %{"age" => 30, "name" => "Alice"}
@@ -61,7 +61,7 @@ defmodule ToonEx.Encode.ObjectsTest do
         indent: 2,
         indent_string: "  ",
         key_order: ["name"],
-        key_folding: "off"
+        key_folding: :off
       }
 
       data = %{"age" => 30, "name" => "Alice"}
@@ -78,7 +78,7 @@ defmodule ToonEx.Encode.ObjectsTest do
         indent: 2,
         indent_string: "  ",
         key_order: [],
-        key_folding: "off"
+        key_folding: :off
       }
 
       data = %{"age" => 30, "name" => "Alice"}
@@ -94,7 +94,7 @@ defmodule ToonEx.Encode.ObjectsTest do
         indent: 2,
         indent_string: "  ",
         key_order: nil,
-        key_folding: "off"
+        key_folding: :off
       }
 
       data = %{"age" => 30, "name" => "Alice"}
@@ -110,7 +110,7 @@ defmodule ToonEx.Encode.ObjectsTest do
         indent: 2,
         indent_string: "  ",
         key_order: %{["user"] => ["first", "last"]},
-        key_folding: "off"
+        key_folding: :off
       }
 
       data = %{"user" => %{"last" => "Smith", "first" => "John"}}

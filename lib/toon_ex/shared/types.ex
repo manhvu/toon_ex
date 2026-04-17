@@ -47,7 +47,7 @@ defmodule ToonEx.Types do
     * `:indent` - Number of spaces for indentation (default: 2)
     * `:delimiter` - Delimiter for array values (default: ",")
     * `:length_marker` - Prefix for array length marker (default: nil)
-    * `:key_folding` - Key folding mode: `"off"` | `"safe"` (default: `"off"`)
+    * `:key_folding` - Key folding mode: `:off` | `:safe` (default: `:off`)
     * `:flatten_depth` - Max depth for key folding: non-negative integer or `:infinity` (default: `:infinity`)
 
   ## Examples
@@ -55,7 +55,7 @@ defmodule ToonEx.Types do
       ToonEx.encode!(data, indent: 4)
       ToonEx.encode!(data, delimiter: "\\t")
       ToonEx.encode!(data, length_marker: "#")
-      ToonEx.encode!(data, key_folding: "safe")
+      ToonEx.encode!(data, key_folding: :safe)
   """
   @type encode_opts :: [encode_opt()]
 
@@ -84,14 +84,14 @@ defmodule ToonEx.Types do
     * `:keys` - How to decode map keys (default: `:strings`)
     * `:strict` - Enable strict mode validation (default: `true`)
     * `:indent_size` - Expected indentation size in spaces (default: 2)
-    * `:expand_paths` - Path expansion mode: `"off"` | `"safe"` (default: `"off"`)
+    * `:expand_paths` - Path expansion mode: `:off` | `:safe` (default: `:off`)
 
   ## Examples
 
       ToonEx.decode!(toon, keys: :strings)
       ToonEx.decode!(toon, keys: :atoms)
       ToonEx.decode!(toon, strict: false)
-      ToonEx.decode!(toon, expand_paths: "safe")
+      ToonEx.decode!(toon, expand_paths: :safe)
   """
   @type decode_opts :: [decode_opt()]
 

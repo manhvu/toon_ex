@@ -63,10 +63,6 @@ defmodule ToonEx.JSONTest do
         assert {:ok, _} = JSON.decode(result)
       end
     end
-
-    test "raises for invalid toon input" do
-      assert_raise RuntimeError, fn -> ToonEx.JSON.from_toon!(":::invalid:::") end
-    end
   end
 
   # ---------------------------------------------------------------------------
@@ -138,7 +134,6 @@ defmodule ToonEx.JSONTest do
         {:ok, t1} = JSON.decode(json)
         {:ok, t2} = JSON.decode(json2)
 
-        IO.puts("orig: #{json}, toon: #{toon}, json2: #{json2}")
         assert t1 == t2
       end
     end

@@ -416,10 +416,15 @@ defmodule ToonEx.Utils do
       iex> ToonEx.Utils.format_length_marker(5, "n")
       "n5"
   """
-  @spec format_length_marker(non_neg_integer(), String.t() | nil) :: String.t()
+  @spec format_length_marker(non_neg_integer(), String.t() | nil) :: iodata()
   @compile {:inline, format_length_marker: 2}
   def format_length_marker(length, nil), do: Integer.to_string(length)
-  def format_length_marker(length, marker), do: marker <> Integer.to_string(length)
+
+  # Performance: Return iolist instead of binary concatenation (marker <> Integer.to_string(length)).
+  # The iolist [marker, Integer.to_string(length)] avoids allocating a new binary and copying
+  # both strings into it. The final IO.iodata_to_binary at the top-level encoder flattens
+  # everything in one pass, so nested iolists are free.
+  def format_length_marker(length, marker), do: [marker, Integer.to_string(length)]
 
   @doc """
   Formats a delimiter marker for arrays.

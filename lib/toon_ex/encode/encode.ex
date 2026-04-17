@@ -286,9 +286,10 @@ defmodule ToonEx.Encode do
 
   defp do_is_primitive?(_), do: false
 
-  # Encode root tabular array - builds binary directly for memory efficiency
   # Encode root tabular array
   # Performance: Accepts pre-computed keys from single-pass detection
+  # Uses iolist construction instead of binary concatenation for O(1) appends.
+  # Final binary conversion happens only at the boundary (IO.iodata_to_binary).
   defp encode_root_tabular_array(data, keys, length_marker, delimiter_marker, opts) do
     # Apply key_order if provided, otherwise use pre-computed sorted keys
     final_keys =
@@ -301,58 +302,37 @@ defmodule ToonEx.Encode do
           keys
       end
 
-    # Build header as binary directly with braces around fields
-    fields_bin = do_build_fields_binary(final_keys, opts.delimiter, <<>>)
-    header_bin = "[#{length_marker}#{delimiter_marker}]#{fields_bin}:"
+    # Build fields as iolist with interspersed delimiters — no binary concatenation
+    # Each key is already iodata from Strings.encode_key; Enum.intersperse
+    # inserts delimiter references without copying.
+    fields_iodata =
+      final_keys
+      |> Enum.map(&Strings.encode_key/1)
+      |> Enum.intersperse(opts.delimiter)
 
-    # Build rows as binary directly - single pass with binary concatenation
+    header = ["[", length_marker, delimiter_marker, "]", "{", fields_iodata, "}", ":"]
+
+    # Build rows as iolists — each row is ["\n", indent, values...]
+    # No binary concatenation; values are iodata from Primitives.encode
     indent = opts.indent_string
     delim = opts.delimiter
 
-    Enum.reduce(data, header_bin, fn obj, acc ->
-      row_bin = do_build_row_binary(final_keys, obj, delim, <<>>)
-      <<acc::binary, ?\n, indent::binary, row_bin::binary>>
-    end)
+    rows =
+      Enum.map(data, fn obj ->
+        row_values =
+          final_keys
+          |> Enum.map(fn k -> Primitives.encode(Map.get(obj, k), delim) end)
+          |> Enum.intersperse(delim)
+
+        ["\n", indent, row_values]
+      end)
+
+    [header | rows]
   end
 
-  # Performance: Tail-recursive binary field builder with braces
-  defp do_build_fields_binary([], _delim, acc), do: <<"{", acc::binary, "}">>
-
-  defp do_build_fields_binary([k], _delim, acc) do
-    key_bin = IO.iodata_to_binary(Strings.encode_key(k))
-    <<"{", acc::binary, key_bin::binary, "}">>
-  end
-
-  defp do_build_fields_binary([k | rest], delim, acc) do
-    key_bin = IO.iodata_to_binary(Strings.encode_key(k))
-
-    do_build_fields_binary(
-      rest,
-      delim,
-      <<acc::binary, key_bin::binary, delim::binary>>
-    )
-  end
-
-  # Performance: Tail-recursive binary row value builder
-  defp do_build_row_binary([], _obj, _delim, acc), do: acc
-
-  defp do_build_row_binary([k], obj, delim, acc) do
-    val_bin = IO.iodata_to_binary(Primitives.encode(Map.get(obj, k), delim))
-    <<acc::binary, val_bin::binary>>
-  end
-
-  defp do_build_row_binary([k | rest], obj, delim, acc) do
-    val_bin = IO.iodata_to_binary(Primitives.encode(Map.get(obj, k), delim))
-
-    do_build_row_binary(
-      rest,
-      obj,
-      delim,
-      <<acc::binary, val_bin::binary, delim::binary>>
-    )
-  end
-
-  # Encode root list array - returns binary with newlines between items, no trailing newline per TOON spec Section 12
+  # Encode root list array - returns iodata with newlines between items
+  # No trailing newline per TOON spec Section 12
+  # Stays in iolist form — binary conversion happens only at the boundary
   defp encode_root_list_array(data, length_marker, delimiter_marker, _depth, opts) do
     header = [@open_bracket, length_marker, delimiter_marker, @close_bracket, @colon]
 
@@ -361,9 +341,7 @@ defmodule ToonEx.Encode do
         encode_root_list_item(item, 0, opts)
       end)
 
-    # Build iodata tree with newlines interspersed, then convert to binary
     [header | Enum.flat_map(items, fn item -> ["\n", [opts.indent_string, item]] end)]
-    |> IO.iodata_to_binary()
   end
 
   # Encode a single root list item
@@ -543,7 +521,12 @@ defmodule ToonEx.Encode do
 
   # Format length marker
   defp format_length_marker(length, nil), do: Integer.to_string(length)
-  defp format_length_marker(length, marker), do: marker <> Integer.to_string(length)
+
+  # Performance: Return iolist instead of binary concatenation (marker <> Integer.to_string(length)).
+  # The iolist [marker, Integer.to_string(length)] avoids allocating a new binary and copying
+  # both strings into it. The final IO.iodata_to_binary at the top-level encoder flattens
+  # everything in one pass, so nested iolists are free.
+  defp format_length_marker(length, marker), do: [marker, Integer.to_string(length)]
 
   @compile {:inline, format_delimiter_marker: 1}
   defp format_delimiter_marker(","), do: ""

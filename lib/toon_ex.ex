@@ -40,7 +40,7 @@ defmodule ToonEx do
     * `:indent` - Number of spaces for indentation (default: 2)
     * `:delimiter` - Delimiter for array values: "," | "\\t" | "|" (default: ",")
     * `:length_marker` - Prefix for array length marker (default: nil)
-    * `:key_folding` - Key folding mode: `"off"` | `"safe"` (default: `"off"`)
+    * `:key_folding` - Key folding mode: `:off` | `:safe` (default: `:off`)
     * `:flatten_depth` - Max depth for key folding: non-negative integer or `:infinity` (default: `:infinity`)
 
   ### Decoding Options
@@ -48,7 +48,7 @@ defmodule ToonEx do
     * `:keys` - How to decode map keys: `:strings` | `:atoms` | `:atoms!` (default: `:strings`)
     * `:strict` - Enable strict mode validation (default: `true`)
     * `:indent_size` - Expected indentation size in spaces (default: 2)
-    * `:expand_paths` - Path expansion mode: `"off"` | `"safe"` (default: `"off"`)
+    * `:expand_paths` - Path expansion mode: `:off` | `:safe` (default: `:off`)
 
   ### Fragment Encoding
 
