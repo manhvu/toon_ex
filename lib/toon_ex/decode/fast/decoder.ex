@@ -589,7 +589,9 @@ defmodule ToonEx.Decode.Fast.Decoder do
       # Quoted string primitive — starts with " and is a complete quoted value.
       # Must be checked BEFORE the colon check because quoted strings like
       # "room:lobby" contain colons but are primitives, not key-value lines.
-      binary_part(trimmed, 0, 1) == "\"" ->
+      # However, "key": value patterns (quoted key followed by colon) should
+      # fall through to the colon check below.
+      binary_part(trimmed, 0, 1) == "\"" and not quoted_key_value?(trimmed) ->
         parse_list_items(rest, indent, delim, opts, [parse_value(trimmed) | acc])
 
       # Key-value or nested object on hyphen line
@@ -1076,6 +1078,22 @@ defmodule ToonEx.Decode.Fast.Decoder do
   # ── String Handling ─────────────────────────────────────────────────────────
 
   # Unquote a key – strips surrounding quotes and unescapes
+  # Check if a trimmed string is a quoted key followed by ":" (e.g., "key": value).
+  # Returns false for quoted string primitives like "room:lobby" where the colon
+  # is inside the quotes, not after the closing quote.
+  defp quoted_key_value?(<<"\"", _::binary>> = trimmed) do
+    case find_closing_quote(trimmed, 1) do
+      {:found, end_pos} ->
+        next_pos = end_pos + 1
+        next_pos < byte_size(trimmed) and binary_part(trimmed, next_pos, 1) == ":"
+
+      :not_found ->
+        false
+    end
+  end
+
+  defp quoted_key_value?(_), do: false
+
   defp unquote_key(<<"\"", rest::binary>>) do
     case do_strip_trailing_quote(rest) do
       {:ok, inner} ->

@@ -270,4 +270,81 @@ defmodule ToonEx.Decode.ArraysTest do
       assert {:ok, [[], [42], []]} = ToonEx.decode(toon)
     end
   end
+
+  describe "Phoenix serializer" do
+    test "Channels serializer mesage" do
+      toon =
+        """
+        [5]:
+          - "1"
+          - null
+          - "test:019d3c0e-0833-72c4-b53e-04d6b79f4563"
+          - get_friends_in_activity
+          - "019d3c0e-0841-775e-baa6-db837e318ed4": 8e127d9d-beaf-45cd-b6db-04d6b79f4563
+        """
+
+      expected =
+        [
+          "1",
+          nil,
+          "test:019d3c0e-0833-72c4-b53e-04d6b79f4563",
+          "get_friends_in_activity",
+          %{
+            "019d3c0e-0841-775e-baa6-db837e318ed4" => "8e127d9d-beaf-45cd-b6db-04d6b79f4563"
+          }
+        ]
+
+      assert {:ok, ^expected} = ToonEx.decode(toon)
+    end
+
+    test "Channels serializer mesage 2" do
+      toon =
+        """
+        [5]:
+          - "1"
+          - null
+          - "test:019d3c0e-0833-72c4-b53e-04d6b79f4563"
+          - get_friends_in_activity
+          - "019d3c0e-0841-775e-baa6-db837e318ed4": "8e127d9d-beaf-45cd-b6db-04d6b79f4563"
+        """
+
+      expected =
+        [
+          "1",
+          nil,
+          "test:019d3c0e-0833-72c4-b53e-04d6b79f4563",
+          "get_friends_in_activity",
+          %{
+            "019d3c0e-0841-775e-baa6-db837e318ed4" => "8e127d9d-beaf-45cd-b6db-04d6b79f4563"
+          }
+        ]
+
+      assert {:ok, ^expected} = ToonEx.decode(toon)
+    end
+
+    test "Channels serializer mesage 3" do
+      toon =
+        """
+        [5]:
+          - "1"
+          - null
+          - "test:019d3c0e-0833-72c4-b53e-04d6b79f4563"
+          - get_friends_in_activity
+          - 019d3c0e-0841-775e-baa6-db837e318ed4: 8e127d9d-beaf-45cd-b6db-04d6b79f4563
+        """
+
+      expected =
+        [
+          "1",
+          nil,
+          "test:019d3c0e-0833-72c4-b53e-04d6b79f4563",
+          "get_friends_in_activity",
+          %{
+            "019d3c0e-0841-775e-baa6-db837e318ed4" => "8e127d9d-beaf-45cd-b6db-04d6b79f4563"
+          }
+        ]
+
+      assert {:ok, ^expected} = ToonEx.decode(toon)
+    end
+  end
 end
